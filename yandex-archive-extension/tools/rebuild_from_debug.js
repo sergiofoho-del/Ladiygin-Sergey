@@ -56,7 +56,7 @@ for (const link of summary.links) {
       const ci = ExcelSheets.crumbInfo(node.crumbs, pg.page, node.id, new URL(pg.url).origin);
       const meta = { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName };
       if (fs.existsSync(path.join(scanDir, ci.scanName))) {
-        Object.assign(meta, { scanFile: `Archive_Scans/${ci.scanName}`, scanHref: `../../Archive_Scans/${encodeURIComponent(ci.scanName)}` });
+        Object.assign(meta, { scanFile: `Archive_Scans/${ci.scanName}`, scanHref: `../../Archive_Scans/${ci.scanName}` });
       }
       pageMeta[pg.url] = meta;
     }
