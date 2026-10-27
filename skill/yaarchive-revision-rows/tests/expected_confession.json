@@ -29,6 +29,14 @@
    "деревня Черепкова"
   ]
  },
+ "confession_1826_p185_fixture.json": {
+  "persons": 85,
+  "with_no": 83,
+  "with_age": 84,
+  "with_block": 83,
+  "with_yard": 85,
+  "settlements": []
+ },
  "confession_1845_p892_fixture.json": {
   "persons": 82,
   "with_no": 82,
@@ -37,6 +45,16 @@
   "with_yard": 82,
   "settlements": [
    "деревня Черепкова"
+  ]
+ },
+ "confession_1864_p884_fixture.json": {
+  "persons": 61,
+  "with_no": 59,
+  "with_age": 55,
+  "with_block": 61,
+  "with_yard": 59,
+  "settlements": [
+   "деревня Луки"
   ]
  }
 }

@@ -423,6 +423,7 @@
     if ((m = f.match(/^seq_breaks_([MF])=(\d+)\/(\d+)/))) return `номера ${m[1] === 'M' ? 'мужчин' : 'женщин'} не подряд в ${m[2]} местах из ${m[3]} (пропуск или ошибка распознавания)`;
     if ((m = f.match(/^age_columns_(\d)/))) return `найдено столбцов возраста: ${m[1]} из 2`;
     if (f === 'yard_column_not_found') return 'столбец № двора не найден';
+    if (f === 'age_zone_wide') return 'столбцы возраста найдены дальше обычного от списка';
     if (f === 'left_columns_2_sex_unknown') return 'слева найдено 2 столбца из 3 — пол по номеру не определён';
     if ((m = f.match(/^orphans:(\d+)/))) return `номеров двора без строки: ${m[1]}`;
     return f;
@@ -444,7 +445,14 @@
     let kept = 0;
     const rowsStart = st.rows.length;
     if (!st.blocks) st.blocks = [];
-    for (const p of rep.persons) {
+    for (const [pi, p] of rep.persons.entries()) {
+      if (!st.current && !st.other && !p.settlement_here && ConfessionRows.numberingRestart(rep.persons, pi)) {
+        // до первого заголовка НП нумерация людей началась с 1 — отсюда ведомость прихода, её первый НП по порядку
+        const order = page.year && page.year < 1750 ? ConfessionRows.ORDER_BEFORE_1750 : ConfessionRows.ORDER_FROM_1750;
+        applyHeader(st, out, ['own', order[0]]);
+        st.pendingNote = 'НП по порядку: начало ведомости, нумерация людей с 1 (стр. ' + page.page + ')';
+        lastBlockKey = null;
+      }
       if (p.settlement_here) {
         const [name, note] = ConfessionRows.resolveSettlement(p.settlement_here, st.current, page.year);
         const own = !String(name).startsWith('чужой НП');
@@ -480,6 +488,12 @@
       for (const f of p.flags) {
         if (CONF_FLAG_NOTE[f]) { addNote(fam, CONF_FLAG_NOTE[f] + ' (стр. ' + page.page + ')'); notes.push(CONF_FLAG_NOTE[f]); }
         if (f.startsWith('split:')) notes.push(f.slice(6));
+        // номера, исправленные по соседям (сквозная нумерация): только в строку человека
+        let fm;
+        if ((fm = f.match(/^no_fixed:(.*)$/))) notes.push(`номер исправлен по соседям (распознано «${fm[1]}»)`);
+        if ((fm = f.match(/^joined_cell:(.*)$/))) notes.push(`номер склеен из «${fm[1]}»`);
+        if ((fm = f.match(/^extra_number:(.*)$/))) notes.push(`число «${fm[1]}» в столбце номеров — не номер человека`);
+        if (f === 'no_restored') notes.push('номер не распознан, восстановлен по соседям');
       }
       st.rows.push({ page: page.page, url: page.url, settlement: cur, yard: fam.yard, half: p.half, sex: sx, no: p.no,
         age: p.age, inBlock: p.person_in_block, person: p.person_text || '', names: p.names_text, notes, flags: p.flags.join(';') });
