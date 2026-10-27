@@ -33,13 +33,20 @@
   let debugIndex = [];        // сводка по страницам для run_summary.json
   let busyPicking = false;
 
-  let settings = { mode: Logic.DEFAULT_MODE, textSel: '', dateSel: '' };
+  // outFormat — вид результата в Excel ('confession' | 'revision'), не зависит от типа обработки;
+  // saveScans — сохранять оригиналы сканов в «Archive_Scans»
+  let settings = { mode: Logic.DEFAULT_MODE, textSel: '', dateSel: '', outFormat: '', saveScans: false };
 
   let families = [];         // семьи-дворы: {settlement, yard, persons[], notes[], url, year}
   let sheetRows = [];
   let linkRows = [];
   let blockRecords = [];     // блоки текста (исповедные ведомости) — для проверки деления на людей
   let rowRecords = [];       // строки таблицы внутри блоков «Крестьяне/Крестьянки» (режим «Ревизские сказки»)
+  let pageMeta = {};         // адрес страницы -> {cga, cgaUrl, scanName, scanFile, scanHref} для столбцов ссылок
+  const SCAN_DIR = 'Archive_Scans';
+  const SCAN_QUALITY = 0.4;  // JPG 40%, как в Scrpt_YA_Orig_Scan
+  let scanDir = null;        // FileSystemDirectoryHandle «Archive_Scans» в папке со ссылками
+  let scanStats = { saved: 0, existed: 0, failed: 0, bytes: 0 };
 
   // ---------------------------------------------------------------- UI
   function log(msg) {
@@ -49,6 +56,39 @@
     el.scrollTop = el.scrollHeight;
   }
   function setStatus(s) { $('status').textContent = s; }
+
+  // шкала времени до окончания: всего страниц по всем ссылкам (без повторов), сделано, среднее время страницы
+  const progress = { total: 0, done: 0, t0: 0, times: [] };
+  const fmtDur = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return (h ? h + ' ч ' : '') + (h || m ? m + ' мин ' : '') + (h ? '' : sec + ' с');
+  };
+  function progressStart(total) {
+    Object.assign(progress, { total, done: 0, t0: Date.now(), times: [] });
+    $('progressBox').style.display = 'block';
+    $('progressBar').max = Math.max(total, 1);
+    progressShow();
+  }
+  function progressStep(ms) {
+    progress.done++;
+    if (ms !== undefined) { progress.times.push(ms); if (progress.times.length > 30) progress.times.shift(); }
+    progressShow();
+  }
+  function progressShow(final) {
+    const { total, done, t0, times } = progress;
+    $('progressBar').value = Math.min(done, total);
+    const spent = Date.now() - t0;
+    const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
+    const left = Math.max(0, total - done) * avg;
+    const pct = total ? Math.round(done / total * 100) : 0;
+    let t = `Страниц ${done} из ${total} (${pct}%) · прошло ${fmtDur(spent)}`;
+    if (final) t += ' · готово';
+    else if (avg) {
+      const end = new Date(Date.now() + left);
+      t += ` · осталось ≈ ${fmtDur(left)} · окончание ≈ ${end.toTimeString().slice(0, 5)}`;
+    } else t += ' · оценка времени — после первых страниц';
+    $('progressText').textContent = t;
+  }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const rand = ([a, b]) => a + Math.random() * (b - a);
   const mode = () => Logic.getMode(settings.mode);
@@ -59,6 +99,8 @@
     $('pickDirBtn').disabled = on;
     $('linksSel').disabled = on;
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = on; });
+    $('outFormat').disabled = on;
+    $('saveScans').disabled = on;
     $('pickTextBtn').disabled = on;
     $('pickDateBtn').disabled = on;
     $('resetSelBtn').disabled = on;
@@ -74,10 +116,12 @@
   // ---------------------------------------------------------------- настройки
   async function loadSettings() {
     try {
-      const got = await chrome.storage.local.get(['mode', 'textSel', 'dateSel']);
+      const got = await chrome.storage.local.get(['mode', 'textSel', 'dateSel', 'outFormat', 'saveScans']);
       if (got.mode && Logic.MODES[got.mode]) settings.mode = got.mode;
       settings.textSel = got.textSel || '';
       settings.dateSel = got.dateSel || '';
+      settings.outFormat = Logic.MODES[got.outFormat] ? got.outFormat : '';
+      settings.saveScans = !!got.saveScans;
     } catch (e) { /* без сохранения — не критично */ }
   }
   async function saveSettings() {
@@ -88,13 +132,36 @@
     $('descConfession').textContent = Logic.MODES.confession.description;
     $('descRevision').textContent = Logic.MODES.revision.description;
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.checked = r.value === settings.mode; });
+    applyOutUi();
   }
+  // вид результата: по умолчанию как тип обработки, переключатель задаёт его явно
+  const outFormat = () => settings.outFormat || settings.mode;
+  function applyOutUi() {
+    $('outFormat').checked = outFormat() === 'revision';
+    $('saveScans').checked = settings.saveScans;
+    $('outFormatInfo').textContent = outFormat() === settings.mode
+      ? `Excel будет в виде «${Logic.MODES[outFormat()].label}» — как тип обработки.`
+      : `Excel будет в виде «${Logic.MODES[outFormat()].label}», хотя данные обрабатываются как «${Logic.MODES[settings.mode].label}».`;
+  }
+  $('outFormat').addEventListener('change', async () => {
+    settings.outFormat = $('outFormat').checked ? 'revision' : 'confession';
+    await saveSettings();
+    applyOutUi();
+    log(`Вид результата в Excel: ${Logic.MODES[outFormat()].label}.`);
+  });
+  $('saveScans').addEventListener('change', async () => {
+    settings.saveScans = $('saveScans').checked;
+    await saveSettings();
+    log(settings.saveScans ? `Сканы будут сохраняться в папку «${SCAN_DIR}».` : 'Сканы сохраняться не будут.');
+  });
 
   document.querySelectorAll('input[name="mode"]').forEach((r) => {
     r.addEventListener('change', async () => {
       if (!r.checked) return;
       settings.mode = r.value;
+      settings.outFormat = '';          // при смене типа обработки вид результата снова следует за ним
       await saveSettings();
+      applyOutUi();
       reparseLinks();
       log(`Тип обработки: ${mode().label}.`);
     });
@@ -247,10 +314,32 @@
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        clearInterval(poll);
         chrome.tabs.onUpdated.removeListener(onUpd);
         err ? reject(err) : resolve();
       };
       const timer = setTimeout(() => done(new Error('таймаут загрузки страницы')), timeoutMs);
+      // подстраховка: событие «загрузка» может прийти раньше подписки — проверяем вкладку раз в секунду
+      const want = String(url).replace(/#.*$/, '');
+      const started = Date.now();
+      let kicks = 0;
+      const poll = setInterval(async () => {
+        if (finished) { clearInterval(poll); return; }
+        try {
+          const t = await chrome.tabs.get(tabId);
+          if (Date.now() - started > 1500 && t.status === 'complete' && String(t.url || '').replace(/#.*$/, '') === want) done();
+          // фоновая вкладка иногда не начинает загрузку («unloaded») — повторяем переход (до двух раз)
+          else if (!sawLoading && kicks < 2 && Date.now() - started > 8000 * (kicks + 1) && (t.status === 'unloaded' || t.url !== want)) {
+            kicks++;
+            chrome.tabs.update(tabId, { url }).catch(() => {});
+          } else if (kicks >= 2 && Date.now() - started > 24000 && t.status === 'unloaded') {
+            // вкладка так и не загрузилась — закрываем её, следующая попытка откроет новую
+            if (tabId === workTabId) workTabId = null;
+            chrome.tabs.remove(tabId).catch(() => {});
+            done(new Error('рабочая вкладка не загружается — открываю новую'));
+          }
+        } catch (e) { /* вкладка закрыта — сработает таймаут */ }
+      }, 1000);
       const onUpd = (id, info) => {
         if (id !== tabId) return;
         if (info.status === 'loading') sawLoading = true;
@@ -306,7 +395,8 @@
               `блоков с координатами: в окне текста ${(res.textBlocks || []).length}, на скане ${(res.overlayBlocks || []).length}`);
         }
         return {
-          url, text: res.text || '', date: res.date || '', found: !!res.found, nextNode: res.nextNode || null,
+          url, text: res.text || '', date: res.date || '', found: !!res.found, nextNode: res.nextNode || null, tabId,
+          origin: res.origin || 'https://ya.ru',
           candidates: [
             { name: 'окно текста', blocks: res.textBlocks || [] },
             { name: 'скан', blocks: res.overlayBlocks || [] },
@@ -322,13 +412,79 @@
     return { url, text: '', date: '', found: false, err: lastErr || 'ошибка' };
   }
 
-  async function ensureLogin() {
-    const tabId = await getWorkTab();
-    log('Проверяю вход в Яндекс...');
+  // ------------------------------------------------------ сканы (Scrpt_YA_Orig_Scan)
+  // Путь «Главная/Каталог/ЦГА Москвы/Фонд/Опись/Дело/Скан» и имя файла — по данным страницы (без лишних запросов).
+  // Скан: в папку «Archive_Scans» рядом с файлом ссылок (уже сохранённые не скачиваются повторно);
+  // если выбран только файл ссылок — в «Загрузки/Archive_Scans/». Ссылка из result.xlsx (yaarchive_debug/<время>/) —
+  // относительная: ../../Archive_Scans/<файл>.
+  function noteMeta(r, n) {
+    if (!r || !r.nextNode) return;
+    const ci = ExcelSheets.crumbInfo(r.nextNode.crumbs, n, r.nextNode.id, r.origin);
+    pageMeta[r.url] = Object.assign(pageMeta[r.url] || {}, { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName });
+  }
+  async function getScanDir() {
+    if (scanDir || !linksDir) return scanDir;
+    try { scanDir = await linksDir.getDirectoryHandle(SCAN_DIR, { create: true }); } catch (e) {
+      log(`Не удалось создать папку «${SCAN_DIR}» в ${linksDir.name} (${e.message}) — сканы пойдут в «Загрузки/${SCAN_DIR}/».`);
+    }
+    return scanDir;
+  }
+  async function scanExists(name) {
+    const d = await getScanDir();
+    if (!d) return false;
+    try { const f = await (await d.getFileHandle(name)).getFile(); return f.size > 20000; } catch (e) { return false; }
+  }
+  // -> время, потраченное на скан (мс), чтобы сократить паузу между страницами
+  async function saveScan(r, n) {
+    const t0 = Date.now();
+    const m = pageMeta[r.url];
+    if (!m || !r.nextNode || !r.nextNode.id) return 0;
+    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: `../../${SCAN_DIR}/${m.scanName}` });
+    if (await scanExists(m.scanName)) { scanStats.existed++; setFile(); return 0; }
+    let res = null;
     try {
-      await navigate(tabId, 'https://ya.ru/archive', 60000);
+      const [inj] = await chrome.scripting.executeScript({ target: { tabId: r.tabId }, func: PageScripts.scanFetcher, args: [r.nextNode.id, SCAN_QUALITY] });
+      res = inj && inj.result;
+    } catch (e) { res = { ok: false, err: e.message }; }
+    if (!res || !res.ok) {
+      scanStats.failed++;
+      log(`  стр. ${n}: скан не сохранён — ${(res && res.err) || 'нет ответа'}`);
+      return Date.now() - t0;
+    }
+    const bin = atob(res.b64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'image/jpeg' });
+    const d = await getScanDir();
+    try {
+      if (d) {
+        const w = await (await d.getFileHandle(m.scanName, { create: true })).createWritable();
+        await w.write(blob); await w.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        await new Promise((ok) => chrome.downloads.download({ url, filename: `${SCAN_DIR}/${m.scanName}`, conflictAction: 'overwrite', saveAs: false }, () => ok()));
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      }
+      setFile();
+      scanStats.saved++; scanStats.bytes += res.size;
+      log(`  стр. ${n}: скан ${m.scanName} (${res.w}×${res.h}, ${Math.round(res.origSize / 1024)} КБ → ${Math.round(res.size / 1024)} КБ)`);
     } catch (e) {
-      log('Страница ya.ru/archive открылась с ошибкой: ' + e.message);
+      scanStats.failed++;
+      log(`  стр. ${n}: скан не записан — ${e.message}`);
+    }
+    return Date.now() - t0;
+  }
+
+  async function ensureLogin() {
+    let tabId = await getWorkTab();
+    log('Проверяю вход в Яндекс...');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await navigate(tabId, 'https://ya.ru/archive', 60000);
+        break;
+      } catch (e) {
+        log('Страница ya.ru/archive открылась с ошибкой: ' + e.message);
+        tabId = await getWorkTab();          // если вкладка была закрыта как незагружающаяся — новая
+      }
     }
     const tab = await chrome.tabs.get(tabId);
     const onArchive = /^https:\/\/(ya\.ru|yandex\.ru)\/archive/.test(tab.url || '');
@@ -398,127 +554,9 @@
   });
 
   // ------------------------------------------------------------- Excel
-  const trunc = (v) => (typeof v === 'string' ? v.slice(0, 32000) : v === null || v === undefined ? '' : v);
-
-  function widthsFor(rows) {
-    const cols = Math.max(...rows.map((r) => r.length));
-    const out = [];
-    for (let c = 0; c < cols; c++) {
-      let w = 8;
-      rows.slice(0, 200).forEach((r) => {
-        const v = r[c];
-        if (v !== '' && v !== null && v !== undefined) w = Math.max(w, String(v).length);
-      });
-      out.push(Math.min(Math.max(w + 2, 10), 70));
-    }
-    return out;
-  }
-
-  // «45» -> 45; «7 1/2» -> 7.5; «1/2» -> 0.5
-  function ageValue(age) {
-    const m = String(age || '').match(/^\s*(\d{1,3})?\s*(?:(\d)\s*\/\s*(\d))?/);
-    if (!m || !(m[1] || m[2])) return null;
-    return parseInt(m[1] || '0', 10) + (m[2] ? parseInt(m[2], 10) / parseInt(m[3], 10) : 0);
-  }
-  // год рождения = год ведомости − полных лет (±1 год: ведомость составлялась в течение года)
-  function birthYear(year, age) {
-    const v = ageValue(age), y = parseInt(year, 10);
-    return v === null || !y ? '' : y - Math.floor(v);
-  }
-
   function buildSheets() {
-    if (settings.mode === 'confession') return buildConfessionSheets();
-    // Одна строка = одна семья-двор. Все люди двора — в одной ячейке (каждый с новой строки).
-    // Ссылка на страницу — только у строки семьи-двора.
-    const peopleRows = [['Год', 'Населённый пункт', 'Двор №', settings.mode === 'confession'
-      ? 'Люди двора: текст блока как распознан; под ним строки таблицы — № мужчины/женщины, лѣта'
-      : 'Люди двора (№ м/ж, как распознано, возраст)', 'Примечание', 'Ссылка на страницу']];
-    families.forEach((f) => peopleRows.push([f.year, f.settlement, f.yard, Layout.familyCell(f), f.notes.join('; '), f.url].map(trunc)));
-
-    const pageRows = [['Год', 'Найденные НП округи', 'Ссылка', 'Распознанный текст страницы', 'Проверка итогов страницы']];
-    sheetRows.forEach((r) => pageRows.push([r.year, r.found, r.url, r.text, r.check || ''].map(trunc)));
-
-    let detailRows;
-    if (settings.mode === 'confession') {
-      detailRows = [['Год', 'Населённый пункт', 'Двор №', 'Лист разворота', 'Пол', '№ мужчины / женщины', 'Лѣта', 'Строка в блоке №',
-        'Текст блока (список людей)', 'Проверка', 'Ссылка на страницу']];
-      rowRecords.forEach((r) => detailRows.push([r.year, r.settlement, r.yard, r.half, r.sex, r.no, r.age, r.inBlock, r.names, r.flags, r.url].map(trunc)));
-    } else {
-      detailRows = [['Год', 'Населённый пункт', 'Двор №', 'Пол', 'Блок №', 'Строка №', 'Строк в блоке', 'Текст блока (список людей)',
-        'Лѣта по ревизии', 'Когда выбыл', 'В отлучке с', 'Лѣта нынѣ', 'Проверка', 'Ссылка на страницу']];
-      rowRecords.forEach((r) => detailRows.push([r.year, r.settlement, r.yard, r.sex, r.blockNo, r.rowNo, r.rowsInBlock, r.names,
-        r.agePrev, r.departed, r.absent, r.ageNow, r.flags, r.url].map(trunc)));
-    }
-
-    const linkOut = [['Год', 'Исходная ссылка', 'Диапазон из ссылки', 'Просмотрено страниц',
-      'Найдено НП (шт.)', 'Какие НП', 'Решение', 'Дворов (семей)', 'Людей', 'Как собрано', 'Примечание']];
-    linkRows.forEach((r) => linkOut.push(r.map(trunc)));
-
-    const w = (rows) => widthsFor(rows);
-    const peopleWidths = w(peopleRows);
-    peopleWidths[3] = 60;
-    const sheets = [{ name: 'Люди', rows: peopleRows, widths: peopleWidths }];
-    if (rowRecords.length) {
-      const dw = w(detailRows);
-      dw[settings.mode === 'confession' ? 8 : 7] = 50;
-      sheets.push({ name: 'Строки', rows: detailRows, widths: dw });
-    }
-    sheets.push({ name: 'Страницы', rows: pageRows, widths: w(pageRows) });
-    sheets.push({ name: 'Ссылки', rows: linkOut, widths: w(linkOut) });
-    return sheets;
-  }
-
-  // Исповедные ведомости: одна строка Excel = один человек. Текст Основного блока поделён по людям,
-  // номер (м№/ж№) и возраст — в своих столбцах напротив человека, год рождения рассчитан.
-  function buildConfessionSheets() {
-    const head = ['Год', 'Населённый пункт', 'Двор №', 'Человек (как распознано)', 'Пол', 'Номер', 'Возраст', 'Год рождения',
-      'Примечание', 'Ссылка на страницу'];
-    const people = [head];
-    const yards = ConfessionRows.fillYards(rowRecords);
-    rowRecords.forEach((r, i) => {
-      const yd = yards[i];
-      let notes = (r.notes || []).slice();
-      if (yd.calc) {
-        notes = notes.filter((n) => !/^номер двора не найден/.test(n));
-        if (i === 0 || !yards[i - 1].calc || yards[i - 1].yard !== yd.yard) notes.unshift(`номер двора ${yd.yard} вычислен по соседним дворам`);
-      }
-      people.push([r.year, r.settlement, yd.yard, r.person, r.sex,
-        r.no === '' ? '' : (parseInt(r.no, 10) || r.no), r.age === '' ? '' : (/^\d+$/.test(String(r.age)) ? parseInt(r.age, 10) : r.age),
-        birthYear(r.year, r.age), notes.join('; '), r.url].map(trunc));
-    });
-    // Объединение: «Населённый пункт» — до следующего НП (в пределах документа), «Двор №» — по строкам людей двора.
-    const merges = [];
-    const runs = (col, key) => {
-      let st = 1;
-      for (let r = 2; r <= people.length; r++) {
-        if (r === people.length || key(r) !== key(st)) {
-          if (r - 1 > st) merges.push([st, col, r - 1, col]);
-          st = r;
-        }
-      }
-    };
-    const S = XlsxWriter.STYLE;
-    runs(1, (r) => `${people[r][0]}|${people[r][1]}`);
-    runs(2, (r) => (people[r][2] === '' || people[r][2] == null) ? `empty${r}`
-      : `${people[r][0]}|${people[r][1]}|${people[r][2]}|${yards[r - 1].calc}`);
-    const styleAt = (r, c) => (c === 1 ? S.SETTLEMENT : c === 2 ? (yards[r - 1] && yards[r - 1].calc ? S.YARD_CALC : S.YARD)
-      : c === 3 ? S.PERSON : undefined);
-    const pw = widthsFor(people);
-    pw[1] = 9; pw[2] = 7; pw[3] = 45; pw[8] = 40;
-    const blocks = [['Год', 'Населённый пункт', 'Двор №', 'Текст блока целиком (как распознан)', 'Людей в блоке', 'Ссылка на страницу']];
-    blockRecords.forEach((b) => blocks.push([b.year, b.settlement, b.yard, b.text, b.persons, b.url].map(trunc)));
-    const bw = widthsFor(blocks); bw[3] = 70;
-    const pageRows = [['Год', 'Найденные НП округи', 'Ссылка', 'Распознанный текст страницы', 'Проверка страницы (найдено ячеек по столбцам)']];
-    sheetRows.forEach((r) => pageRows.push([r.year, r.found, r.url, r.text, r.check || ''].map(trunc)));
-    const linkOut = [['Год', 'Исходная ссылка', 'Диапазон из ссылки', 'Просмотрено страниц',
-      'Найдено НП (шт.)', 'Какие НП', 'Решение', 'Дворов (семей)', 'Людей', 'Как собрано', 'Примечание']];
-    linkRows.forEach((r) => linkOut.push(r.map(trunc)));
-    return [
-      { name: 'Люди', rows: people, widths: pw, styleAt, merges },
-      { name: 'Блоки текста', rows: blocks, widths: bw },
-      { name: 'Страницы', rows: pageRows, widths: widthsFor(pageRows) },
-      { name: 'Ссылки', rows: linkOut, widths: widthsFor(linkOut) },
-    ];
+    return ExcelSheets.build({ processMode: settings.mode, outFormat: outFormat(), families, rowRecords, blockRecords,
+      sheetRows, linkRows, pageMeta }, { ConfessionRows, Layout, STYLE: XlsxWriter.STYLE });
   }
 
   function downloadBlob(blob, name) {
@@ -608,11 +646,19 @@
     linkRows = [];
     rowRecords = [];
     blockRecords = [];
+    pageMeta = {};
+    scanDir = null;
+    scanStats = { saved: 0, existed: 0, failed: 0, bytes: 0 };
     const m = mode();
     const pageCache = new Map();     // `${fileId}:${page}` -> {url,text,date,found,err}
     let misses = 0;
     setRunningUi(true);
-    log(`Тип обработки: ${m.label}. Окно текста: ${settings.textSel || 'авто'}; дата: ${settings.dateSel || 'авто'}.`);
+    log(`Тип обработки: ${m.label}. Вид Excel: ${Logic.MODES[outFormat()].label}. Сканы: ${settings.saveScans ? `сохранять в «${SCAN_DIR}»` : 'нет'}. ` +
+        `Окно текста: ${settings.textSel || 'авто'}; дата: ${settings.dateSel || 'авто'}.`);
+    // всего страниц для шкалы времени (одна страница в нескольких ссылках считается один раз)
+    const allPages = new Set();
+    for (const it of items) if (it.fileId && it.pFrom !== null) for (let n = it.pFrom; n <= it.pTo; n++) allPages.add(`${it.fileId}:${n}`);
+    progressStart(allPages.size);
 
     try {
       const cur = await chrome.tabs.getCurrent();
@@ -641,8 +687,13 @@
           if (!pageCache.has(key)) {
             setStatus(`${tag}: страница ${n} (диапазон ${lo}–${hi})`);
             log(`${tag}: загружаю страницу ${n} (диапазон ${lo}–${hi})...`);
+            const tPage = Date.now();
             const r = await fetchSheet(it.fileId, n);
             pageCache.set(key, r);
+            noteMeta(r, n);
+            // скан сохраняется, пока рабочая вкладка ещё на этой странице; время скана идёт в счёт паузы
+            let scanMs = 0;
+            if (settings.saveScans && r.nextNode && !stopRequested) scanMs = await saveScan(r, n);
             if (!r.found && !stopRequested) {
               if (++misses >= CFG.MAX_MISSES) {
                 stopRequested = true;
@@ -652,7 +703,8 @@
             } else if (r.found) {
               misses = 0;
             }
-            if (n < hi) await sleep(rand(CFG.DELAY));
+            if (n < hi) await sleep(Math.max(0, rand(CFG.DELAY) - scanMs));
+            progressStep(Date.now() - tPage);
           }
           texts.set(n, pageCache.get(key));
         }
@@ -724,6 +776,11 @@
     } catch (e) {
       log('ОШИБКА: ' + (e && e.stack ? e.stack : e));
     } finally {
+      progressShow(true);
+      if (settings.saveScans) {
+        log(`Сканы: сохранено ${scanStats.saved} (${Math.round(scanStats.bytes / 1048576)} МБ), уже были ${scanStats.existed}, ` +
+            `не удалось ${scanStats.failed}. Папка: ${linksDir ? `«${linksDir.name}/${SCAN_DIR}/»` : `«Загрузки/${SCAN_DIR}/»`}.`);
+      }
       try { await saveResult(true); } catch (e) { log('Не удалось сохранить: ' + e.message); }
       if ($('debugAll').checked && debugIndex.length) {
         saveDebug('run_summary.json', { version: chrome.runtime.getManifest().version, mode: settings.mode, pages: debugIndex, links: linkRows });
