@@ -41,6 +41,9 @@
     return v === null || !y ? '' : y - Math.floor(v);
   }
   const cleanAge = (a) => String(a || '').replace(/[.,\s]+$/, '').trim();
+  // годы ревизий: возраст «по прошлой ревизии» отсчитывается от года предыдущей ревизии
+  const REVISION_YEARS = [1719, 1744, 1762, 1782, 1795, 1811, 1815, 1834, 1850, 1858];
+  const prevRevision = (year) => { const y = parseInt(year, 10); return REVISION_YEARS.filter((v) => v < y).pop() || null; };
 
   // ---------------------------------------------------------------- приведение строк
   // Строки ревизской сказки (строка таблицы блока) -> люди: текст блока делится по людям по полу строк.
@@ -56,13 +59,16 @@
       grp.forEach((r, k) => {
         const notes = (r.notes || []).slice();
         const now = cleanAge(r.ageNow), prev = cleanAge(r.agePrev);
-        let age = now;
-        if (!age && prev) { age = prev; notes.push('возраст по прошлой ревизии'); }
+        let age = now, ageYear = r.year;
+        if (!age && prev) {
+          age = prev; ageYear = prevRevision(r.year) || r.year;
+          notes.push(`возраст по прошлой ревизии${ageYear !== r.year ? ` (${ageYear} г.)` : ''}`);
+        }
         if (r.departed) notes.push('выбыл: ' + cleanAge(r.departed));
         if (r.absent) notes.push('в отлучке: ' + cleanAge(r.absent));
         if (parts[k] && parts[k][1]) notes.push(parts[k][1]);
         out.push({ year: r.year, page: r.page, url: r.url, settlement: r.settlement, yard: r.yard, sex: r.sex, no: '',
-          age, person: (parts[k] && parts[k][0]) || '', names: r.names, notes, flags: r.flags || '' });
+          age, ageYear, person: (parts[k] && parts[k][0]) || '', names: r.names, notes, flags: r.flags || '' });
       });
       i = j;
     }
@@ -97,7 +103,7 @@
       if (b > a) for (let c = 0; c < 3; c++) merges.push([a, firstCol + c, b, firstCol + c]);
       for (let r = a + 1; r <= b; r++) for (let c = 0; c < 3; c++) rows[r][firstCol + c] = '';
       if (/^https?:/.test(url)) links.push([a, firstCol, url]);
-      if (m.scanFile) links.push([a, firstCol + 1, m.scanHref || encodeURI(m.scanFile)]);
+      if (m.scanFile) links.push([a, firstCol + 1, m.scanHref || m.scanFile]);
       if (m.cga && m.cgaUrl) links.push([a, firstCol + 2, m.cgaUrl]);
     };
     for (let r = 2; r <= rows.length; r++) {
@@ -120,7 +126,7 @@
       if (!i) return;
       const m = meta[row[2]] || {};
       if (/^https?:/.test(row[2])) pageLinks.push([i, 2, row[2]]);
-      if (m.scanFile) pageLinks.push([i, 3, m.scanHref || encodeURI(m.scanFile)]);
+      if (m.scanFile) pageLinks.push([i, 3, m.scanHref || m.scanFile]);
       if (m.cga && m.cgaUrl) pageLinks.push([i, 4, m.cgaUrl]);
     });
     const pgw = widthsFor(pageRows); pgw[5] = 60;
@@ -147,7 +153,7 @@
         }
         people.push([r.year, r.settlement, yd.yard, r.person, r.sex,
           r.no === '' ? '' : (parseInt(r.no, 10) || r.no), r.age === '' ? '' : (/^\d+$/.test(String(r.age)) ? parseInt(r.age, 10) : r.age),
-          birthYear(r.year, r.age), notes.join('; '), ...linkCells(r.url, meta)].map(trunc));
+          birthYear(r.ageYear || r.year, r.age), notes.join('; '), ...linkCells(r.url, meta)].map(trunc));
       });
       const merges = [];
       const runs = (col, key) => {

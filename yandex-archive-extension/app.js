@@ -314,10 +314,32 @@
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        clearInterval(poll);
         chrome.tabs.onUpdated.removeListener(onUpd);
         err ? reject(err) : resolve();
       };
       const timer = setTimeout(() => done(new Error('таймаут загрузки страницы')), timeoutMs);
+      // подстраховка: событие «загрузка» может прийти раньше подписки — проверяем вкладку раз в секунду
+      const want = String(url).replace(/#.*$/, '');
+      const started = Date.now();
+      let kicks = 0;
+      const poll = setInterval(async () => {
+        if (finished) { clearInterval(poll); return; }
+        try {
+          const t = await chrome.tabs.get(tabId);
+          if (Date.now() - started > 1500 && t.status === 'complete' && String(t.url || '').replace(/#.*$/, '') === want) done();
+          // фоновая вкладка иногда не начинает загрузку («unloaded») — повторяем переход (до двух раз)
+          else if (!sawLoading && kicks < 2 && Date.now() - started > 8000 * (kicks + 1) && (t.status === 'unloaded' || t.url !== want)) {
+            kicks++;
+            chrome.tabs.update(tabId, { url }).catch(() => {});
+          } else if (kicks >= 2 && Date.now() - started > 24000 && t.status === 'unloaded') {
+            // вкладка так и не загрузилась — закрываем её, следующая попытка откроет новую
+            if (tabId === workTabId) workTabId = null;
+            chrome.tabs.remove(tabId).catch(() => {});
+            done(new Error('рабочая вкладка не загружается — открываю новую'));
+          }
+        } catch (e) { /* вкладка закрыта — сработает таймаут */ }
+      }, 1000);
       const onUpd = (id, info) => {
         if (id !== tabId) return;
         if (info.status === 'loading') sawLoading = true;
@@ -417,7 +439,7 @@
     const t0 = Date.now();
     const m = pageMeta[r.url];
     if (!m || !r.nextNode || !r.nextNode.id) return 0;
-    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: `../../${SCAN_DIR}/${encodeURIComponent(m.scanName)}` });
+    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: `../../${SCAN_DIR}/${m.scanName}` });
     if (await scanExists(m.scanName)) { scanStats.existed++; setFile(); return 0; }
     let res = null;
     try {
@@ -453,12 +475,16 @@
   }
 
   async function ensureLogin() {
-    const tabId = await getWorkTab();
+    let tabId = await getWorkTab();
     log('Проверяю вход в Яндекс...');
-    try {
-      await navigate(tabId, 'https://ya.ru/archive', 60000);
-    } catch (e) {
-      log('Страница ya.ru/archive открылась с ошибкой: ' + e.message);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await navigate(tabId, 'https://ya.ru/archive', 60000);
+        break;
+      } catch (e) {
+        log('Страница ya.ru/archive открылась с ошибкой: ' + e.message);
+        tabId = await getWorkTab();          // если вкладка была закрыта как незагружающаяся — новая
+      }
     }
     const tab = await chrome.tabs.get(tabId);
     const onArchive = /^https:\/\/(ya\.ru|yandex\.ru)\/archive/.test(tab.url || '');
