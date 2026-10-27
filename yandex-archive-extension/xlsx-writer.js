@@ -1,6 +1,7 @@
 // Минимальная запись .xlsx без сторонних библиотек.
 // .xlsx = zip из XML-файлов. Строки хранятся как inlineStr, числа — как числа.
-// Использование: const bytes = await XlsxWriter.build([{name, rows, widths}]);
+// Использование: const bytes = await XlsxWriter.build([{name, rows, widths, styleAt, merges}]);
+// styleAt(r, c) -> номер стиля (XlsxWriter.STYLE) или undefined; merges — [[r1, c1, r2, c2], …] (с нуля, включительно).
 (function (root) {
   const enc = new TextEncoder();
 
@@ -124,7 +125,7 @@
     return s;
   }
 
-  function sheetXml(rows, widths) {
+  function sheetXml(rows, widths, styleAt, merges) {
     const out = [];
     out.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
     out.push('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">');
@@ -138,9 +139,13 @@
     rows.forEach((row, r) => {
       out.push(`<row r="${r + 1}">`);
       row.forEach((v, c) => {
-        if (v === null || v === undefined || v === '') return;
+        const st = r > 0 && styleAt ? styleAt(r, c) : undefined;
         const ref = colName(c) + (r + 1);
-        const style = r === 0 ? ' s="1"' : (typeof v === 'string' && v.includes('\n') ? ' s="2"' : '');
+        if (v === null || v === undefined || v === '') {
+          if (st) out.push(`<c r="${ref}" s="${st}"/>`);     // пустая ячейка с заливкой (внутри объединения)
+          return;
+        }
+        const style = r === 0 ? ' s="1"' : st ? ` s="${st}"` : (typeof v === 'string' && v.includes('\n') ? ' s="2"' : '');
         if (typeof v === 'number' && Number.isFinite(v)) {
           out.push(`<c r="${ref}"${style}><v>${v}</v></c>`);
         } else {
@@ -149,20 +154,42 @@
       });
       out.push('</row>');
     });
-    out.push('</sheetData></worksheet>');
+    out.push('</sheetData>');
+    const mg = (merges || []).filter((m) => m[2] > m[0] || m[3] > m[1]);
+    if (mg.length) {
+      out.push(`<mergeCells count="${mg.length}">`);
+      mg.forEach(([r1, c1, r2, c2]) => out.push(`<mergeCell ref="${colName(c1)}${r1 + 1}:${colName(c2)}${r2 + 1}"/>`));
+      out.push('</mergeCells>');
+    }
+    out.push('</worksheet>');
     return out.join('');
   }
 
+  // Стили: 0 обычный, 1 заголовок, 2 перенос строк, 3 НП (вертикально, заливка), 4 двор (заливка),
+  // 5 двор вычислен (другая заливка), 6 текст человека (перенос, по центру по высоте)
+  const STYLE = { NORMAL: 0, HEAD: 1, WRAP: 2, SETTLEMENT: 3, YARD: 4, YARD_CALC: 5, PERSON: 6 };
+  const thin = '<left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right>' +
+    '<top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/>';
+  const fill = (rgb) => `<fill><patternFill patternType="solid"><fgColor rgb="${rgb}"/><bgColor indexed="64"/></patternFill></fill>`;
   const STYLES =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
-    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
-    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+    fill('FFE2EFDA') + fill('FFFFF2CC') + fill('FFFCE4D6') + '</fills>' +
+    `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${thin}</border></borders>` +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
-    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs>' +
+    '<cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+    '<alignment horizontal="center" vertical="center" textRotation="90" wrapText="1"/></xf>' +
+    '<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+    '<alignment horizontal="center" vertical="center"/></xf>' +
+    '<xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+    '<alignment horizontal="center" vertical="center"/></xf>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+    '</cellXfs>' +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
   async function build(sheets) {
@@ -211,12 +238,12 @@
     add('xl/_rels/workbook.xml.rels', rels);
 
     add('xl/styles.xml', STYLES);
-    sheets.forEach((s, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows, s.widths)));
+    sheets.forEach((s, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows, s.widths, s.styleAt, s.merges)));
 
     return makeZip(files);
   }
 
-  const api = { build };
+  const api = { build, STYLE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.XlsxWriter = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

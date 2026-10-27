@@ -39,7 +39,16 @@
 
   <fieldset>
     <legend>2. Список ссылок</legend>
-    <input type="file" id="linksFile" accept=".html,.htm,text/html">
+    <div class="row">
+      <button id="pickDirBtn" class="primary">Выбрать папку, где лежит файл ссылок</button>
+      <select id="linksSel" hidden></select>
+    </div>
+    <div class="muted" id="dirInfo">Папка не выбрана</div>
+    <div class="muted">Результат (Excel), журнал работы и отладочные файлы по каждой странице сохраняются автоматически
+      в эту же папку: «yaarchive_debug/&lt;время запуска&gt;/». Папка запоминается до следующего раза.</div>
+    <details style="margin-top:6px"><summary class="muted">или выбрать только файл (тогда сохранение в «Загрузки/yaarchive_debug/…»)</summary>
+      <input type="file" id="linksFile" accept=".html,.htm,text/html">
+    </details>
     <div class="muted" id="linksInfo">Файл list_links.html не выбран</div>
   </fieldset>
 
@@ -65,13 +74,14 @@
   <fieldset>
     <legend>4. Настройки</legend>
     <label><input type="checkbox" id="showTab"> Показывать рабочую вкладку (если страницы не успевают прогружаться в фоне)</label>
-    <label><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html и first_page_debug.json) — нужны для настройки сопоставления блоков</label>
-    <label><input type="checkbox" id="debugAll" checked> Сохранять отладочный пакет по КАЖДОЙ странице (исповедные ведомости): «Загрузки/yaarchive_debug/&lt;время запуска&gt;/» —
-      данные страницы, результат привязки столбцов и сводка run_summary.json. Эту папку присылайте на анализ.</label>
+    <label><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html, first_page_debug.json, first_page_next_data.json)</label>
+    <label><input type="checkbox" id="debugAll" checked> Сохранять отладочный пакет по КАЖДОЙ странице: данные страницы, результат привязки столбцов и сводка run_summary.json
+      (в папку «yaarchive_debug/&lt;время запуска&gt;/» рядом с файлом ссылок). Эту папку присылайте на анализ.</label>
+    <label><input type="checkbox" id="askSave"> Дополнительно спросить, куда сохранить копию Excel</label>
   </fieldset>
 
   <div class="row">
-    <button id="startBtn" class="primary">Выбрать, куда сохранить Excel, и начать</button>
+    <button id="startBtn" class="primary">Начать</button>
     <button id="saveBtn" disabled>Сохранить сейчас</button>
     <button id="stopBtn" disabled>Остановить и сохранить</button>
   </div>

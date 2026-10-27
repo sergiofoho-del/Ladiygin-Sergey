@@ -518,7 +518,33 @@
     return ['чужой НП: ' + name.slice(6), ''];
   }
 
-  const api = { process, splitBlock, settlementOf, resolveSettlement, norm, DEFAULTS, ORDER_BEFORE_1750, ORDER_FROM_1750 };
+  // Пустой «Двор №»: вычисляется по ближайшим дворам с номером того же документа (года).
+  // rows: [{year, yard}] по порядку; -> [{yard, calc}] (calc=true — номер вычислен).
+  //  перед первым номером N            -> N − 1 (продолжение двора с прошлой страницы);
+  //  между P и N (N − P > 1)            -> P + 1 (пропущенный номер), иначе P (продолжение двора P);
+  //  после последнего номера P          -> P + 1.
+  function fillYards(rows) {
+    const num = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
+    const out = rows.map((r) => ({ yard: r.yard, calc: false }));
+    let i = 0;
+    while (i < rows.length) {
+      if (num(rows[i].yard) !== null) { i++; continue; }
+      const y = rows[i].year;
+      let j = i;
+      while (j < rows.length && num(rows[j].yard) === null && rows[j].year === y) j++;
+      const P = i > 0 && rows[i - 1].year === y ? num(out[i - 1].yard) : null;
+      const N = j < rows.length && rows[j].year === y ? num(rows[j].yard) : null;
+      let v = null;
+      if (P !== null && N !== null) v = N - P > 1 ? P + 1 : P;
+      else if (N !== null) v = Math.max(1, N - 1);
+      else if (P !== null) v = P + 1;
+      if (v !== null) for (let k = i; k < j; k++) out[k] = { yard: v, calc: true };
+      i = j;
+    }
+    return out;
+  }
+
+  const api = { process, splitBlock, fillYards, settlementOf, resolveSettlement, norm, DEFAULTS, ORDER_BEFORE_1750, ORDER_FROM_1750 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ConfessionRows = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
