@@ -275,6 +275,114 @@ def align(av, pv, tol):
     return out[::-1]
 
 
+
+def _ocr_like(x, y):
+    """числа похожи как ошибка распознавания одной цифры: 151/51, 130/140, 2310/231"""
+    a, b = str(x), str(y)
+    if len(a) == len(b):
+        return sum(c1 != c2 for c1, c2 in zip(a, b)) == 1
+    if abs(len(a) - len(b)) == 1:
+        lo, hi = (a, b) if len(a) < len(b) else (b, a)
+        return any(hi[:k] + hi[k + 1:] == lo for k in range(len(hi)))
+    return False
+
+
+def _join_cells(people):
+    """ячейка «2 11»: распознавание разбило номер 211 на два числа — склеиваем, если склеенное продолжает
+    соседей того же пола (до трёх с каждой стороны: они сами могут быть с ошибкой), а первое число — нет"""
+    by_cell = {}
+    for p in people:
+        if "split_cell" in p["flags"] and p.get("num_id") and not p.get("_drop"):
+            by_cell.setdefault(p["num_id"], []).append(p)
+    for cell in by_cell.values():
+        if len(cell) != 2 or cell[0]["sex"] != cell[1]["sex"]:
+            continue
+        cell.sort(key=lambda p: p["cy"])
+        sex = cell[0]["sex"]
+        others = sorted([p for p in people if p["sex"] == sex and not p.get("_drop") and str(p["no"]).isdigit()
+                         and all(p is not c for c in cell)], key=lambda p: p["cy"])
+        prev = [int(p["no"]) for p in others if p["cy"] < cell[0]["cy"]][-3:]
+        nxt = [int(p["no"]) for p in others if p["cy"] > cell[1]["cy"]][:3]
+        joined = int(cell[0]["no"] + cell[1]["no"])
+
+        def fits(val):
+            return any(q + 1 <= val <= q + 4 for q in prev) or any(q - 4 <= val <= q - 1 for q in nxt)
+        if fits(joined) and not fits(int(cell[0]["no"])):
+            keep, gone = cell
+            raw = f"{keep['no']} {gone['no']}"
+            keep["no"] = str(joined)
+            keep["cy"] = (keep["cy"] + gone["cy"]) / 2
+            keep["flags"] = [f for f in keep["flags"] if f != "split_cell"] + [f"joined_cell:{raw}"]
+            if keep.get("age") in ("", None) and gone.get("age") not in ("", None):
+                keep["age"], keep["age_id"] = gone["age"], gone.get("age_id")
+            gone["_drop"] = True
+
+
+def _fix_sequence(people, sex):
+    """соседи сверху и снизу согласованы (a и a+2) — средний a+1; ошибка одной цифры («2013» после 212,
+    «151» вместо 51) — по предыдущему; первый номер — по двум следующим. Только номера, без удаления."""
+    seq = sorted([p for p in people if p["sex"] == sex and not p.get("_drop") and str(p["no"]).isdigit()],
+                 key=lambda p: p["cy"])
+    n = len(seq)
+    if n < 3:
+        return seq
+    v = [int(p["no"]) for p in seq]
+    for i in range(n):
+        a = v[i - 1] if i > 0 else None
+        b = v[i + 1] if i + 1 < n else None
+        x = v[i]
+        fix = None
+        if a is not None and b is not None and b - a == 2 and x != a + 1:
+            fix = a + 1
+        elif a is not None and abs(x - (a + 1)) > 3 and _ocr_like(x, a + 1) and (b is None or b == a + 2 or _ocr_like(b, a + 2)):
+            fix = a + 1
+        elif a is None and b is not None and i + 2 < n and v[i + 2] == b + 1 and abs(x - (b - 1)) > 3 and _ocr_like(x, b - 1):
+            fix = b - 1
+        if fix is not None:
+            seq[i]["flags"].append(f"no_fixed:{x}")
+            seq[i]["no"] = str(fix)
+            v[i] = fix
+    return seq
+
+
+def repair_numbers(people):
+    """Номера мужчин и женщин сквозные: на листе сверху вниз идут подряд. По соседям чинятся
+    ошибки распознавания (флаги no_fixed:<как распознано>, joined_cell:<как распознано>) — два прохода,
+    потому что исправленные соседи помогают следующим. Лишнее число между согласованными соседями
+    (a, X, a+1) — не номер человека (чаще № двора, слипшийся с номером): человек без возраста убирается,
+    число уходит в кандидаты № двора; с возрастом — остаётся без номера (extra_number). Пропуск (a, a+2)
+    заполняется единственным человеком того же пола без номера между ними (no_restored).
+    -> (люди, лишние числа [(cy, значение, id блока)])"""
+    for _ in range(2):
+        _join_cells(people)
+        for sex in ("M", "F"):
+            _fix_sequence(people, sex)
+    extra = []
+    for sex in ("M", "F"):
+        seq = sorted([p for p in people if p["sex"] == sex and not p.get("_drop") and str(p["no"]).isdigit()],
+                     key=lambda p: p["cy"])
+        v = [int(p["no"]) for p in seq]
+        for i in range(1, len(seq) - 1):
+            a, x, b = v[i - 1], v[i], v[i + 1]
+            if b - a == 1 and x not in (a, b):
+                p = seq[i]
+                if p.get("age") in ("", None):
+                    extra.append((p["cy"], p["no"], p.get("num_id")))
+                    p["_drop"] = True
+                else:
+                    p["flags"].append(f"extra_number:{p['no']}")
+                    p["no"] = ""
+        seq = [p for p in seq if not p.get("_drop") and str(p["no"]).isdigit()]
+        loose = [p for p in people if p["sex"] == sex and not p.get("_drop") and not str(p["no"]).isdigit()]
+        for p1, p2 in zip(seq, seq[1:]):
+            if int(p2["no"]) - int(p1["no"]) == 2:
+                mid = [q for q in loose if p1["cy"] < q["cy"] < p2["cy"]]
+                if len(mid) == 1:
+                    mid[0]["no"] = str(int(p1["no"]) + 1)
+                    mid[0]["flags"] = [f for f in mid[0]["flags"] if f != "age_without_number"] + ["no_restored"]
+    return [p for p in people if not p.get("_drop")], extra
+
+
 # ----------------------------------------------------------------------------- страница
 def process(node, a):
     size = node.get("originalImageSize") or {}
@@ -376,6 +484,17 @@ def process(node, a):
         hf["slope"] = slope
         lcols = cluster_columns(left, gap, ymid, slope)
         rcols = cluster_columns(right, gap, ymid, slope)
+        if len([c for c in rcols if len(c["blocks"]) >= 3]) < 2:
+            # столбцы возраста дальше обычного (узкий текст Основного блока, форма 1826 г. с широкими
+            # полями): зона справа расширяется до левых столбцов следующего листа
+            k = halves.index(hf)
+            lim = halves[k + 1]["x0"] - 1.2 * a.left_zone * W if k + 1 < len(halves) else W
+            rz2 = (rz[0], max(rz[1], min(hf["x1"] + 2.8 * a.right_zone * W, lim)))
+            right2 = [b for b in data_nums if rz2[0] <= b.cx <= rz2[1] and b.kind in ("num", "frac")]
+            rcols2 = [c for c in cluster_columns(right2, gap, ymid, slope) if len(c["blocks"]) >= 3]
+            if len(rcols2) >= 2:
+                right, rcols = right2, rcols2
+                rep["flags"].append(f"half{hf['no']}:age_zone_wide")
         # роли слева: ближайшие к Основному блоку три столбца, справа налево: женщины, мужчины, двор
         lcols = [c for c in lcols if len(c["blocks"]) >= 1]
         roles = {}
@@ -440,17 +559,19 @@ def process(node, a):
                     people.append({"sex": sex, "no": "", "age": ag.vals[0] if ag.vals else ag.text,
                                    "cy": ag.cy - sh(ag.cy), "age_id": ag.id, "flags": ["age_without_number"]})
         people.sort(key=lambda p: p["cy"])
+        # 4а. номера по соседям: ошибки распознавания, лишние числа, пропуски
+        people, extra = repair_numbers(people)
         # 5. номер двора: к первому человеку двора (ближайший по y), дальше действует вниз
-        yards = sorted(roles.get("yard", {"blocks": []})["blocks"], key=lambda b: b.cy)
-        for yb in yards:
-            for v in yb.vals:
-                best = min(people, key=lambda p: abs(p["cy"] - yb.cy), default=None)
-                if best is None or abs(best["cy"] - yb.cy) > 1.2 * med_h:
-                    rep["orphans"].append({"text": yb.text, "id": yb.id, "why": "yard_without_person"})
-                    continue
-                if best.get("yard_mark"):
-                    best["flags"].append("two_yard_numbers")
-                best["yard_mark"] = v
+        yards = sorted([(yb.cy, v, yb.text, yb.id) for yb in roles.get("yard", {"blocks": []})["blocks"] for v in yb.vals]
+                       + [(cy, v, v, bid) for cy, v, bid in extra], key=lambda t: t[0])
+        for ycy, v, ytext, yid in yards:
+            best = min(people, key=lambda p: abs(p["cy"] - ycy), default=None)
+            if best is None or abs(best["cy"] - ycy) > 1.2 * med_h:
+                rep["orphans"].append({"text": ytext, "id": yid, "why": "yard_without_person"})
+                continue
+            if best.get("yard_mark"):
+                best["flags"].append("two_yard_numbers")
+            best["yard_mark"] = v
         # 6. Основной блок: человек -> блок по y (самый низкий из содержащих)
         mains = sorted(hf["main"], key=lambda b: b.y0)
         for p in people:
@@ -543,11 +664,29 @@ def resolve_settlement(name, cur, year):
     return "чужой НП: " + name[6:], ""
 
 
+def numbering_restart(persons, i):
+    """человек i начинает ведомость прихода: № 1–2 его пола, а следующие номера того же пола — малые и
+    растут (сквозная нумерация мужчин и женщин начинается заново с первого двора первого НП)"""
+    p = persons[i]
+    if not str(p.get("no", "")).isdigit() or int(p["no"]) > 2:
+        return False
+    nxt = [int(q["no"]) for q in persons[i + 1:] if q["sex"] == p["sex"] and str(q.get("no", "")).isdigit()][:2]
+    return len(nxt) == 2 and int(p["no"]) < nxt[0] < nxt[1] <= 12
+
+
 def assign_running(pages, year=None):
-    """двор и населённый пункт по порядку страниц (двор и НП действуют, пока не встретится следующий)"""
+    """двор и населённый пункт по порядку страниц (двор и НП действуют, пока не встретится следующий).
+    До первого заголовка НП: если нумерация людей начинается заново с 1, с этого человека начинается
+    ведомость прихода — её первый НП по порядку (село Троицкое); люди выше — хвост предыдущей ведомости
+    в том же деле (остаются «не определён»)."""
     cur_s, cur_y = None, ""
+    order = ORDER_BEFORE_1750 if (year and year < 1750) else ORDER_FROM_1750
     for rep in pages:
-        for p in rep.get("persons", []):
+        persons = rep.get("persons", [])
+        for i, p in enumerate(persons):
+            if cur_s is None and not p.get("settlement_here") and numbering_restart(persons, i):
+                cur_s, cur_y = order[0], ""
+                p["flags"].append("НП по порядку: начало ведомости (нумерация людей с 1)")
             if p.get("settlement_here"):
                 cur_s, note = resolve_settlement(p["settlement_here"], cur_s, year)
                 if note:

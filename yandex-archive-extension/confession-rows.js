@@ -299,6 +299,96 @@
   }
 
   // ----------------------------------------------------------------- страница
+  // числа похожи как ошибка распознавания одной цифры: 151/51, 130/140, 2310/231
+  function ocrLike(x, y) {
+    const a = String(x), b = String(y);
+    if (a.length === b.length) { let d = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++; return d === 1; }
+    if (Math.abs(a.length - b.length) === 1) {
+      const [lo, hi] = a.length < b.length ? [a, b] : [b, a];
+      for (let k = 0; k < hi.length; k++) if (hi.slice(0, k) + hi.slice(k + 1) === lo) return true;
+    }
+    return false;
+  }
+  const isNum = (v) => /^\d+$/.test(String(v));
+
+  // Ячейка «2 11»: номер 211 разбит распознаванием на два числа — склеить, если склеенное продолжает соседей
+  // того же пола (до трёх с каждой стороны), а первое число — нет. См. _join_cells в Python-навыке.
+  function joinCells(people) {
+    const byCell = new Map();
+    for (const p of people) {
+      if (p.flags.includes('split_cell') && p.num_id && !p._drop) { if (!byCell.has(p.num_id)) byCell.set(p.num_id, []); byCell.get(p.num_id).push(p); }
+    }
+    for (const cell of byCell.values()) {
+      if (cell.length !== 2 || cell[0].sex !== cell[1].sex) continue;
+      cell.sort((p, q) => p.cy - q.cy);
+      const sex = cell[0].sex;
+      const others = people.filter((p) => p.sex === sex && !p._drop && isNum(p.no) && !cell.includes(p)).sort((p, q) => p.cy - q.cy);
+      const prev = others.filter((p) => p.cy < cell[0].cy).map((p) => +p.no).slice(-3);
+      const nxt = others.filter((p) => p.cy > cell[1].cy).map((p) => +p.no).slice(0, 3);
+      const joined = parseInt(String(cell[0].no) + String(cell[1].no), 10);
+      const fits = (val) => prev.some((q) => q + 1 <= val && val <= q + 4) || nxt.some((q) => q - 4 <= val && val <= q - 1);
+      if (fits(joined) && !fits(+cell[0].no)) {
+        const [keep, gone] = cell;
+        const raw = `${keep.no} ${gone.no}`;
+        keep.no = String(joined);
+        keep.cy = (keep.cy + gone.cy) / 2;
+        keep.flags = keep.flags.filter((f) => f !== 'split_cell').concat([`joined_cell:${raw}`]);
+        if ((keep.age === '' || keep.age == null) && !(gone.age === '' || gone.age == null)) { keep.age = gone.age; keep.age_id = gone.age_id; }
+        gone._drop = true;
+      }
+    }
+  }
+
+  // Соседи согласованы (a и a+2) — средний a+1; ошибка одной цифры — по предыдущему; первый — по двум следующим.
+  function fixSequence(people, sex) {
+    const seq = people.filter((p) => p.sex === sex && !p._drop && isNum(p.no)).sort((p, q) => p.cy - q.cy);
+    const n = seq.length;
+    if (n < 3) return;
+    const v = seq.map((p) => +p.no);
+    for (let i = 0; i < n; i++) {
+      const a = i > 0 ? v[i - 1] : null, b = i + 1 < n ? v[i + 1] : null, x = v[i];
+      let fix = null;
+      if (a !== null && b !== null && b - a === 2 && x !== a + 1) fix = a + 1;
+      else if (a !== null && Math.abs(x - (a + 1)) > 3 && ocrLike(x, a + 1) && (b === null || b === a + 2 || ocrLike(b, a + 2))) fix = a + 1;
+      else if (a === null && b !== null && i + 2 < n && v[i + 2] === b + 1 && Math.abs(x - (b - 1)) > 3 && ocrLike(x, b - 1)) fix = b - 1;
+      if (fix !== null) { seq[i].flags.push(`no_fixed:${x}`); seq[i].no = String(fix); v[i] = fix; }
+    }
+  }
+
+  // Номера мужчин и женщин сквозные: на листе сверху вниз идут подряд (см. repair_numbers в Python-навыке).
+  function repairNumbers(people) {
+    for (let round = 0; round < 2; round++) {
+      joinCells(people);
+      for (const sex of ['M', 'F']) fixSequence(people, sex);
+    }
+    const extra = [];
+    for (const sex of ['M', 'F']) {
+      let seq = people.filter((p) => p.sex === sex && !p._drop && isNum(p.no)).sort((p, q) => p.cy - q.cy);
+      const v = seq.map((p) => +p.no);
+      for (let i = 1; i + 1 < seq.length; i++) {
+        const a = v[i - 1], x = v[i], b = v[i + 1];
+        if (b - a === 1 && x !== a && x !== b) {
+          const p = seq[i];
+          if (p.age === '' || p.age == null) { extra.push([p.cy, p.no, p.num_id]); p._drop = true; }
+          else { p.flags.push(`extra_number:${p.no}`); p.no = ''; }
+        }
+      }
+      seq = seq.filter((p) => !p._drop && isNum(p.no));
+      const loose = people.filter((p) => p.sex === sex && !p._drop && !isNum(p.no));
+      for (let i = 0; i + 1 < seq.length; i++) {
+        const p1 = seq[i], p2 = seq[i + 1];
+        if (+p2.no - +p1.no === 2) {
+          const mid = loose.filter((q) => p1.cy < q.cy && q.cy < p2.cy);
+          if (mid.length === 1) {
+            mid[0].no = String(+p1.no + 1);
+            mid[0].flags = mid[0].flags.filter((f) => f !== 'age_without_number').concat(['no_restored']);
+          }
+        }
+      }
+    }
+    return [people.filter((p) => !p._drop), extra];
+  }
+
   function process(node, opts) {
     const a = Object.assign({}, DEFAULTS, opts || {});
     const size = node.originalImageSize || {};
@@ -373,7 +463,16 @@
       const right = dataNums.filter((b) => r0 <= b.cx && b.cx <= r1 && (b.kind === 'num' || b.kind === 'frac'));
       const slope = deskewSlope(left.concat(right), 0.15 * medW, ymid);
       const lcols = clusterColumns(left, gap, ymid, slope);
-      const rcols = clusterColumns(right, gap, ymid, slope);
+      let rcols = clusterColumns(right, gap, ymid, slope);
+      if (rcols.filter((c) => c.blocks.length >= 3).length < 2) {
+        // столбцы возраста дальше обычного (форма 1826 г.): зона справа до левых столбцов следующего листа
+        const k = halves.indexOf(hf);
+        const lim = k + 1 < halves.length ? halves[k + 1].x0 - 1.2 * a.leftZone * W : W;
+        const rz2 = [r0, Math.max(r1, Math.min(hf.x1 + 2.8 * a.rightZone * W, lim))];
+        const right2 = dataNums.filter((b) => rz2[0] <= b.cx && b.cx <= rz2[1] && (b.kind === 'num' || b.kind === 'frac'));
+        const rcols2 = clusterColumns(right2, gap, ymid, slope).filter((c) => c.blocks.length >= 3);
+        if (rcols2.length >= 2) { rcols = rcols2; rep.flags.push(`half${hf.no}:age_zone_wide`); }
+      }
       const roles = {};
       const pick = lcols.slice(-3);
       let names = ['yard', 'm_no', 'f_no'].slice(3 - pick.length);
@@ -394,7 +493,7 @@
       const colBlocks = (r) => (roles[r] ? roles[r].blocks : []);
 
       // 4. люди
-      const people = [];
+      let people = [];
       for (const [sex, role] of [['M', 'm_no'], ['F', 'f_no']]) {
         for (const b of colBlocks(role)) {
           b.vals.forEach((v, k) => {
@@ -428,15 +527,20 @@
         });
       }
       people.sort((p, q) => p.cy - q.cy);
+      // 4а. номера по соседям: ошибки распознавания, лишние числа, пропуски
+      let extra;
+      [people, extra] = repairNumbers(people);
       // 5. двор
-      for (const yb of colBlocks('yard').slice().sort((p, q) => p.cy - q.cy)) {
-        for (const v of yb.vals) {
-          let best = null;
-          for (const p of people) if (!best || Math.abs(p.cy - yb.cy) < Math.abs(best.cy - yb.cy)) best = p;
-          if (!best || Math.abs(best.cy - yb.cy) > 1.2 * medH) { rep.orphans.push({ text: yb.text, id: yb.id, why: 'yard_without_person' }); continue; }
-          if (best.yard_mark) best.flags.push('two_yard_numbers');
-          best.yard_mark = v;
-        }
+      const yards = [];
+      for (const yb of colBlocks('yard')) for (const v of yb.vals) yards.push([yb.cy, v, yb.text, yb.id]);
+      for (const [cy, v, id] of extra) yards.push([cy, v, v, id]);
+      yards.sort((p, q) => p[0] - q[0]);
+      for (const [ycy, v, ytext, yid] of yards) {
+        let best = null;
+        for (const p of people) if (!best || Math.abs(p.cy - ycy) < Math.abs(best.cy - ycy)) best = p;
+        if (!best || Math.abs(best.cy - ycy) > 1.2 * medH) { rep.orphans.push({ text: ytext, id: yid, why: 'yard_without_person' }); continue; }
+        if (best.yard_mark) best.flags.push('two_yard_numbers');
+        best.yard_mark = v;
       }
       // 6. Основной блок
       const mains = hf.main.slice().sort((p, q) => p.y0 - q.y0);
@@ -518,6 +622,15 @@
     return ['чужой НП: ' + name.slice(6), ''];
   }
 
+  // Человек i начинает ведомость прихода: № 1–2 его пола, а следующие номера того же пола — малые и растут
+  // (сквозная нумерация начинается заново с первого двора первого НП). См. numbering_restart в Python-навыке.
+  function numberingRestart(persons, i) {
+    const p = persons[i];
+    if (!/^\d+$/.test(String(p.no || '')) || +p.no > 2) return false;
+    const nxt = persons.slice(i + 1).filter((q) => q.sex === p.sex && /^\d+$/.test(String(q.no || ''))).map((q) => +q.no).slice(0, 2);
+    return nxt.length === 2 && +p.no < nxt[0] && nxt[0] < nxt[1] && nxt[1] <= 12;
+  }
+
   // Пустой «Двор №»: вычисляется по ближайшим дворам с номером того же документа (года).
   // rows: [{year, yard}] по порядку; -> [{yard, calc}] (calc=true — номер вычислен).
   //  перед первым номером N            -> N − 1 (продолжение двора с прошлой страницы);
@@ -544,7 +657,7 @@
     return out;
   }
 
-  const api = { process, splitBlock, fillYards, settlementOf, resolveSettlement, norm, DEFAULTS, ORDER_BEFORE_1750, ORDER_FROM_1750 };
+  const api = { process, splitBlock, fillYards, settlementOf, resolveSettlement, numberingRestart, norm, DEFAULTS, ORDER_BEFORE_1750, ORDER_FROM_1750 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ConfessionRows = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
