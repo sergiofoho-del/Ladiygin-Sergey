@@ -302,11 +302,38 @@ def csv_rows(rep):
             yield row
 
 
+
+DEBUG_DIR = "yaarchive_debug"
+
+
+def default_out_dir(inputs):
+    """папка результатов по умолчанию: <папка входных данных>/yaarchive_debug/<время запуска>/"""
+    import datetime
+    p = Path(inputs[0]).resolve()
+    base = p if p.is_dir() else p.parent
+    if DEBUG_DIR in base.parts:          # вход уже внутри yaarchive_debug — пишем в её корень
+        base = Path(*base.parts[:base.parts.index(DEBUG_DIR)])
+    d = base / DEBUG_DIR / datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def collect_inputs(inputs):
+    files = []
+    for p in inputs:
+        p = Path(p)
+        if p.is_dir():   # прошлые результаты в yaarchive_debug/ не считаются входными страницами
+            files += sorted(f for f in p.rglob("*") if f.suffix in (".json", ".html")
+                            and DEBUG_DIR not in f.relative_to(p).parts)
+        else:
+            files.append(p)
+    return files
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="файлы .json/.html или папки")
-    ap.add_argument("--out-json", default="pages.json")
-    ap.add_argument("--out-csv", default="rows.csv")
+    ap.add_argument("--out-json", default=None, help="по умолчанию <папка входа>/yaarchive_debug/<время>/pages.json")
+    ap.add_argument("--out-csv", default=None, help="по умолчанию <папка входа>/yaarchive_debug/<время>/rows.csv")
     ap.add_argument("--split-x", type=float, default=None, help="x границы левой/правой страницы разворота (по умолчанию W/2)")
     ap.add_argument("--fam-tol", type=float, default=0.025, help="допуск по y для номера семьи, доля высоты")
     ap.add_argument("--near-tol", type=float, default=0.01, help="допуск по y для ячейки вне блока, доля высоты")
@@ -315,10 +342,11 @@ def main():
     ap.add_argument("--row-overlap", type=float, default=0.5, help="мин. перекрытие по y для одной строки")
     a = ap.parse_args()
 
-    files = []
-    for p in a.inputs:
-        p = Path(p)
-        files += sorted(f for f in p.rglob("*") if f.suffix in (".json", ".html")) if p.is_dir() else [p]
+    files = collect_inputs(a.inputs)
+    if not a.out_json or not a.out_csv:
+        od = default_out_dir(a.inputs)
+        a.out_json = a.out_json or str(od / "pages.json")
+        a.out_csv = a.out_csv or str(od / "rows.csv")
 
     pages, n_rows = [], 0
     with open(a.out_csv, "w", newline="", encoding="utf-8-sig") as fh:

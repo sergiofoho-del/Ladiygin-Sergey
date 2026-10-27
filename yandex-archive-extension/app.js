@@ -26,7 +26,10 @@
   let appTabId = null;
   let fileHandle = null;
   let debugSaved = false;
-  let debugStamp = '';        // папка отладочного пакета текущего запуска (Загрузки/yaarchive_debug/<время>)
+  let debugStamp = '';        // папка текущего запуска: yaarchive_debug/<время>
+  let linksDir = null;        // папка, где лежит файл ссылок (FileSystemDirectoryHandle); туда пишется yaarchive_debug/
+  let runDir = null;          // yaarchive_debug/<время>/ внутри linksDir
+  let writeChain = Promise.resolve();   // записи в папку идут по очереди
   let debugIndex = [];        // сводка по страницам для run_summary.json
   let busyPicking = false;
 
@@ -53,6 +56,8 @@
   function setRunningUi(on) {
     $('startBtn').disabled = on;
     $('linksFile').disabled = on;
+    $('pickDirBtn').disabled = on;
+    $('linksSel').disabled = on;
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = on; });
     $('pickTextBtn').disabled = on;
     $('pickDateBtn').disabled = on;
@@ -132,8 +137,86 @@
       : 'В файле не найдено ссылок Яндекс Архива.';
   }
 
+  // ---- папка с файлом ссылок: в неё же сохраняются результаты (yaarchive_debug/<время запуска>/)
+  const IDB = { db: 'yaarchive', store: 'handles' };
+  function idb(fn) {
+    return new Promise((resolve, reject) => {
+      const rq = indexedDB.open(IDB.db, 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore(IDB.store);
+      rq.onerror = () => reject(rq.error);
+      rq.onsuccess = () => {
+        const tx = rq.result.transaction(IDB.store, 'readwrite');
+        const r = fn(tx.objectStore(IDB.store));
+        tx.oncomplete = () => resolve(r && r.result);
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  }
+  const outLabel = () => (linksDir ? `«${linksDir.name}/yaarchive_debug/${debugStamp || '<время запуска>'}/»`
+    : `«Загрузки/yaarchive_debug/${debugStamp || '<время запуска>'}/»`);
+
+  async function dirPermission(handle, ask) {
+    const o = { mode: 'readwrite' };
+    if ((await handle.queryPermission(o)) === 'granted') return true;
+    return ask ? (await handle.requestPermission(o)) === 'granted' : false;
+  }
+
+  async function useLinksDir(handle) {
+    linksDir = handle;
+    const files = [];
+    for await (const [name, h] of handle.entries()) {
+      if (h.kind === 'file' && /\.html?$/i.test(name)) files.push(name);
+    }
+    files.sort((a, b) => (a === 'list_links.html' ? -1 : b === 'list_links.html' ? 1 : a.localeCompare(b)));
+    const sel = $('linksSel');
+    sel.innerHTML = '';
+    files.forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+    sel.hidden = files.length < 2;
+    $('dirInfo').textContent = `Папка: ${handle.name}. Результаты: ${handle.name}/yaarchive_debug/<время запуска>/`;
+    $('pickDirBtn').textContent = 'Выбрать другую папку';
+    if (!files.length) {
+      linksDoc = null; items = [];
+      $('linksInfo').textContent = 'В папке нет HTML-файла со ссылками (.html).';
+      return;
+    }
+    await loadLinksFromDir(files[0]);
+  }
+
+  async function loadLinksFromDir(name) {
+    try {
+      const f = await (await linksDir.getFileHandle(name)).getFile();
+      linksDoc = new DOMParser().parseFromString(await f.text(), 'text/html');
+      reparseLinks();
+      $('linksInfo').textContent = `${name}: ` + $('linksInfo').textContent;
+    } catch (err) {
+      linksDoc = null; items = [];
+      $('linksInfo').textContent = `Не удалось прочитать ${name}: ${err.message}`;
+    }
+  }
+
+  $('pickDirBtn').addEventListener('click', async () => {
+    // запомненная папка: подтвердить доступ одним кликом
+    if (linksDir && !(await dirPermission(linksDir, false))) {
+      if (await dirPermission(linksDir, true)) { await useLinksDir(linksDir); return; }
+    }
+    if (!window.showDirectoryPicker) { $('dirInfo').textContent = 'Этот Chrome не умеет выбирать папку — выберите файл ниже.'; return; }
+    try {
+      const h = await window.showDirectoryPicker({ id: 'yaarchive-links', mode: 'readwrite' });
+      await idb((st) => st.put(h, 'linksDir')).catch(() => {});
+      await useLinksDir(h);
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      $('dirInfo').textContent = 'Папку выбрать не удалось: ' + (e && e.message) +
+        ' (Chrome не даёт доступ к корню диска и системным папкам — выберите вложенную папку).';
+    }
+  });
+  $('linksSel').addEventListener('change', () => loadLinksFromDir($('linksSel').value));
+
   $('linksFile').addEventListener('change', async (e) => {
     const f = e.target.files[0];
+    linksDir = null;          // выбран отдельный файл: сохранение в «Загрузки/yaarchive_debug/…»
+    $('dirInfo').textContent = 'Папка не выбрана: результаты — в «Загрузки/yaarchive_debug/<время запуска>/»';
+    $('linksSel').hidden = true;
     linksDoc = null;
     items = [];
     if (!f) { $('linksInfo').textContent = 'Файл не выбран'; return; }
@@ -210,13 +293,11 @@
         });
         const res = (inj && inj.result) || { found: false, text: '', date: '' };
         if (wantHtml && res.html) {
-          downloadBlob(new Blob([res.html], { type: 'text/html;charset=utf-8' }), 'first_page.html');
-          if (res.debug) {
-            downloadBlob(new Blob([JSON.stringify(res.debug)], { type: 'application/json' }), 'first_page_debug.json');
-          }
-          if (res.nextNode) downloadBlob(new Blob([JSON.stringify(res.nextNode)], { type: 'application/json' }), 'first_page_next_data.json');
+          saveOut('first_page.html', new Blob([res.html], { type: 'text/html;charset=utf-8' }));
+          if (res.debug) saveOut('first_page_debug.json', new Blob([JSON.stringify(res.debug)], { type: 'application/json' }));
+          if (res.nextNode) saveOut('first_page_next_data.json', new Blob([JSON.stringify(res.nextNode)], { type: 'application/json' }));
           debugSaved = true;
-          log('Сохранены отладочные файлы первой страницы (папка «Загрузки»): first_page.html и first_page_debug.json или first_page_next_data.json.');
+          log(`Отладочные файлы первой страницы: ${outLabel()} first_page.html, first_page_debug.json / first_page_next_data.json.`);
         }
         if (n !== undefined && res.nextNode) {
           log(`  стр. ${n}: данные страницы (${res.nextHow}), блоков: ${res.nextNode.joinedTextBlocks.length}`);
@@ -393,11 +474,37 @@
     const head = ['Год', 'Населённый пункт', 'Двор №', 'Человек (как распознано)', 'Пол', 'Номер', 'Возраст', 'Год рождения',
       'Примечание', 'Ссылка на страницу'];
     const people = [head];
-    rowRecords.forEach((r) => people.push([r.year, r.settlement, r.yard, r.person, r.sex,
-      r.no === '' ? '' : (parseInt(r.no, 10) || r.no), r.age === '' ? '' : (/^\d+$/.test(String(r.age)) ? parseInt(r.age, 10) : r.age),
-      birthYear(r.year, r.age), (r.notes || []).join('; '), r.url].map(trunc)));
+    const yards = ConfessionRows.fillYards(rowRecords);
+    rowRecords.forEach((r, i) => {
+      const yd = yards[i];
+      let notes = (r.notes || []).slice();
+      if (yd.calc) {
+        notes = notes.filter((n) => !/^номер двора не найден/.test(n));
+        if (i === 0 || !yards[i - 1].calc || yards[i - 1].yard !== yd.yard) notes.unshift(`номер двора ${yd.yard} вычислен по соседним дворам`);
+      }
+      people.push([r.year, r.settlement, yd.yard, r.person, r.sex,
+        r.no === '' ? '' : (parseInt(r.no, 10) || r.no), r.age === '' ? '' : (/^\d+$/.test(String(r.age)) ? parseInt(r.age, 10) : r.age),
+        birthYear(r.year, r.age), notes.join('; '), r.url].map(trunc));
+    });
+    // Объединение: «Населённый пункт» — до следующего НП (в пределах документа), «Двор №» — по строкам людей двора.
+    const merges = [];
+    const runs = (col, key) => {
+      let st = 1;
+      for (let r = 2; r <= people.length; r++) {
+        if (r === people.length || key(r) !== key(st)) {
+          if (r - 1 > st) merges.push([st, col, r - 1, col]);
+          st = r;
+        }
+      }
+    };
+    const S = XlsxWriter.STYLE;
+    runs(1, (r) => `${people[r][0]}|${people[r][1]}`);
+    runs(2, (r) => (people[r][2] === '' || people[r][2] == null) ? `empty${r}`
+      : `${people[r][0]}|${people[r][1]}|${people[r][2]}|${yards[r - 1].calc}`);
+    const styleAt = (r, c) => (c === 1 ? S.SETTLEMENT : c === 2 ? (yards[r - 1] && yards[r - 1].calc ? S.YARD_CALC : S.YARD)
+      : c === 3 ? S.PERSON : undefined);
     const pw = widthsFor(people);
-    pw[3] = 45; pw[8] = 40;
+    pw[1] = 9; pw[2] = 7; pw[3] = 45; pw[8] = 40;
     const blocks = [['Год', 'Населённый пункт', 'Двор №', 'Текст блока целиком (как распознан)', 'Людей в блоке', 'Ссылка на страницу']];
     blockRecords.forEach((b) => blocks.push([b.year, b.settlement, b.yard, b.text, b.persons, b.url].map(trunc)));
     const bw = widthsFor(blocks); bw[3] = 70;
@@ -407,7 +514,7 @@
       'Найдено НП (шт.)', 'Какие НП', 'Решение', 'Дворов (семей)', 'Людей', 'Как собрано', 'Примечание']];
     linkRows.forEach((r) => linkOut.push(r.map(trunc)));
     return [
-      { name: 'Люди', rows: people, widths: pw },
+      { name: 'Люди', rows: people, widths: pw, styleAt, merges },
       { name: 'Блоки текста', rows: blocks, widths: bw },
       { name: 'Страницы', rows: pageRows, widths: widthsFor(pageRows) },
       { name: 'Ссылки', rows: linkOut, widths: widthsFor(linkOut) },
@@ -424,11 +531,19 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
 
-  // Отладочный пакет: файлы складываются в «Загрузки/yaarchive_debug/<время запуска>/» (нужно разрешение downloads).
-  // Без него — обычное скачивание в «Загрузки» с тем же именем без папки.
-  function saveDebug(name, obj) {
-    if (!$('debugAll').checked) return;
-    const blob = new Blob([typeof obj === 'string' ? obj : JSON.stringify(obj, null, 1)], { type: 'application/json' });
+  // Все результаты и отладочные файлы запуска — в одну папку yaarchive_debug/<время запуска>/:
+  //  выбрана папка со ссылками -> прямо в неё (File System Access API);
+  //  выбран только файл        -> «Загрузки/yaarchive_debug/<время>/» (chrome.downloads), иначе обычное скачивание.
+  async function writeToRunDir(name, blob) {
+    if (!runDir) {
+      const dbg = await linksDir.getDirectoryHandle('yaarchive_debug', { create: true });
+      runDir = await dbg.getDirectoryHandle(debugStamp, { create: true });
+    }
+    const w = await (await runDir.getFileHandle(name, { create: true })).createWritable();
+    await w.write(blob);
+    await w.close();
+  }
+  function downloadToFolder(name, blob) {
     const fname = `yaarchive_debug/${debugStamp}/${name}`;
     try {
       if (chrome.downloads && chrome.downloads.download) {
@@ -441,26 +556,42 @@
     } catch (e) { /* запасной путь ниже */ }
     downloadBlob(blob, fname.replace(/\//g, '_'));
   }
+  function localStamp() {      // местное время: 2026-10-27_10-52-03
+    const d = new Date(), z = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}-${z(d.getMinutes())}-${z(d.getSeconds())}`;
+  }
+  function saveOut(name, blob) {
+    if (!debugStamp) debugStamp = localStamp();
+    writeChain = writeChain.then(async () => {
+      if (linksDir) {
+        try { await writeToRunDir(name, blob); return; } catch (e) {
+          log(`Не удалось записать ${name} в папку ${linksDir.name} (${e.message}) — сохраняю в «Загрузки».`);
+        }
+      }
+      downloadToFolder(name, blob);
+    });
+    return writeChain;
+  }
+  function saveDebug(name, obj) {
+    if (!$('debugAll').checked) return;
+    saveOut(name, new Blob([typeof obj === 'string' ? obj : JSON.stringify(obj, null, 1)], { type: 'application/json' }));
+  }
 
-  // download=true — если файл не выбран заранее, скачать копию в «Загрузки»
-  async function saveResult(download) {
+  // Excel всегда сохраняется в папку запуска (result.xlsx, перезаписывается по ходу работы);
+  // если выбран «спросить, куда сохранить» — ещё и копия в выбранный файл.
+  async function saveResult(final) {
     const bytes = await XlsxWriter.build(buildSheets());
+    await saveOut('result.xlsx', new Blob([bytes], { type: XLSX_MIME }));
     if (fileHandle) {
       try {
         const w = await fileHandle.createWritable();
         await w.write(bytes);
         await w.close();
-        log(`Сохранено: дворов ${families.length}, страниц ${sheetRows.length}.`);
-        return true;
       } catch (e) {
-        log('Не удалось записать в выбранный файл (' + e.message + '). Скачиваю копию в «Загрузки».');
-        download = true;
+        log('Не удалось записать в выбранный файл (' + e.message + ').');
       }
     }
-    if (download) {
-      downloadBlob(new Blob([bytes], { type: XLSX_MIME }), 'result.xlsx');
-      log('Файл result.xlsx скачан в папку «Загрузки».');
-    }
+    if (final) log(`Excel сохранён: ${outLabel()} result.xlsx (дворов ${families.length}, страниц ${sheetRows.length}).`);
     return true;
   }
 
@@ -470,7 +601,8 @@
     stopRequested = false;
     debugSaved = false;
     debugIndex = [];
-    debugStamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    debugStamp = localStamp();
+    runDir = null;
     families = [];
     sheetRows = [];
     linkRows = [];
@@ -595,30 +727,36 @@
       try { await saveResult(true); } catch (e) { log('Не удалось сохранить: ' + e.message); }
       if ($('debugAll').checked && debugIndex.length) {
         saveDebug('run_summary.json', { version: chrome.runtime.getManifest().version, mode: settings.mode, pages: debugIndex, links: linkRows });
-        log(`Отладочный пакет: «Загрузки/yaarchive_debug/${debugStamp}/» (страниц: ${debugIndex.length}). Пришлите эту папку на анализ.`);
+        log(`Отладочный пакет: ${outLabel()} (страниц: ${debugIndex.length}). Пришлите эту папку на анализ.`);
       }
       if (workTabId !== null) { chrome.tabs.remove(workTabId).catch(() => {}); workTabId = null; }
       running = false;
       setRunningUi(false);
-      setStatus(`Готово. Дворов: ${families.length}.`);
-      log(`Готово. Дворов: ${families.length}.`);
+      setStatus(`Готово. Дворов: ${families.length}. Результаты: ${outLabel()}`);
+      log(`Готово. Дворов: ${families.length}. Результаты: ${outLabel()}`);
+      saveOut('run_log.txt', new Blob([$('log').textContent], { type: 'text/plain;charset=utf-8' }));
+      try { await writeChain; } catch (e) { /* ошибки уже в журнале */ }
     }
   }
 
   $('startBtn').addEventListener('click', async () => {
     if (running || busyPicking) return;
     if (!items.length) { setStatus('Сначала выберите HTML-файл со ссылками.'); return; }
-    // окно выбора файла должно открываться прямо по клику
+    // доступ к запомненной папке подтверждается прямо по клику (без него — сохранение в «Загрузки»)
+    if (linksDir && !(await dirPermission(linksDir, true))) {
+      log(`Нет доступа к папке ${linksDir.name} — результаты будут сохранены в «Загрузки/yaarchive_debug/…».`);
+      linksDir = null;
+    }
     fileHandle = null;
-    if (window.showSaveFilePicker) {
+    if ($('askSave').checked && window.showSaveFilePicker) {
       try {
         fileHandle = await window.showSaveFilePicker({
           suggestedName: 'result.xlsx',
           types: [{ description: 'Excel', accept: { [XLSX_MIME]: ['.xlsx'] } }],
         });
       } catch (e) {
-        if (e && e.name === 'AbortError') { setStatus('Место сохранения не выбрано.'); return; }
-        log('Окно выбора файла недоступно (' + (e && e.message) + '). Результат будет скачан в «Загрузки».');
+        if (e && e.name === 'AbortError') { setStatus('Место сохранения копии не выбрано.'); return; }
+        log('Окно выбора файла недоступно (' + (e && e.message) + ').');
       }
     }
     await run();
@@ -630,5 +768,17 @@
     applyModeUi();
     showSelectors();
     try { const cur = await chrome.tabs.getCurrent(); appTabId = cur ? cur.id : null; } catch (e) { /* ignore */ }
+    // запомненная папка со ссылками
+    try {
+      const h = await idb((st) => st.get('linksDir'));
+      if (h) {
+        linksDir = h;
+        if (await dirPermission(h, false)) await useLinksDir(h);
+        else {
+          $('dirInfo').textContent = `Запомнена папка «${h.name}» — нажмите кнопку выше, чтобы подтвердить доступ (или выберите другую).`;
+          $('pickDirBtn').textContent = `Открыть папку «${h.name}»`;
+        }
+      }
+    } catch (e) { /* нет сохранённой папки */ }
   })();
 })();

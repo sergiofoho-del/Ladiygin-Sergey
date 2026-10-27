@@ -573,11 +573,73 @@ def csv_rows(rep, year=None):
                "flags": ";".join(p.get("flags", []))}
 
 
+
+
+def fill_yards(rows):
+    """Пустой «Двор №» — по ближайшим дворам с номером того же года (как в расширении, ConfessionRows.fillYards):
+    перед первым номером N -> N-1; между P и N -> P+1, если N-P > 1, иначе P; после последнего P -> P+1.
+    rows: [{"year", "yard"}] по порядку -> [(yard, calc)]"""
+    def num(v):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+    out = [(r.get("yard"), False) for r in rows]
+    i = 0
+    while i < len(rows):
+        if num(rows[i].get("yard")) is not None:
+            i += 1
+            continue
+        y = rows[i].get("year")
+        j = i
+        while j < len(rows) and num(rows[j].get("yard")) is None and rows[j].get("year") == y:
+            j += 1
+        P = num(out[i - 1][0]) if i > 0 and rows[i - 1].get("year") == y else None
+        N = num(rows[j].get("yard")) if j < len(rows) and rows[j].get("year") == y else None
+        v = None
+        if P is not None and N is not None:
+            v = P + 1 if N - P > 1 else P
+        elif N is not None:
+            v = max(1, N - 1)
+        elif P is not None:
+            v = P + 1
+        if v is not None:
+            for k in range(i, j):
+                out[k] = (v, True)
+        i = j
+    return out
+
+DEBUG_DIR = "yaarchive_debug"
+
+
+def default_out_dir(inputs):
+    """папка результатов по умолчанию: <папка входных данных>/yaarchive_debug/<время запуска>/"""
+    import datetime
+    p = Path(inputs[0]).resolve()
+    base = p if p.is_dir() else p.parent
+    if DEBUG_DIR in base.parts:          # вход уже внутри yaarchive_debug — пишем в её корень
+        base = Path(*base.parts[:base.parts.index(DEBUG_DIR)])
+    d = base / DEBUG_DIR / datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def collect_inputs(inputs):
+    files = []
+    for p in inputs:
+        p = Path(p)
+        if p.is_dir():   # прошлые результаты в yaarchive_debug/ не считаются входными страницами
+            files += sorted(f for f in p.rglob("*") if f.suffix in (".json", ".html")
+                            and DEBUG_DIR not in f.relative_to(p).parts)
+        else:
+            files.append(p)
+    return files
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="файлы .json/.html или папки")
-    ap.add_argument("--out-json", default="confession_pages.json")
-    ap.add_argument("--out-csv", default="confession_people.csv")
+    ap.add_argument("--out-json", default=None, help="по умолчанию <папка входа>/yaarchive_debug/<время>/confession_pages.json")
+    ap.add_argument("--out-csv", default=None, help="по умолчанию <папка входа>/yaarchive_debug/<время>/confession_people.csv")
     ap.add_argument("--main-min-w", type=float, default=0.08, help="мин. ширина блока Основного столбца, доля ширины скана")
     ap.add_argument("--left-zone", type=float, default=0.14, help="ширина зоны трёх левых столбцов, доля ширины скана")
     ap.add_argument("--right-zone", type=float, default=0.09, help="ширина зоны двух столбцов возраста, доля ширины скана")
@@ -587,10 +649,11 @@ def main():
     ap.add_argument("--max-halves", type=int, default=2, help="сколько листов на скане (разворот = 2)")
     a = ap.parse_args()
 
-    files = []
-    for p in a.inputs:
-        p = Path(p)
-        files += sorted(f for f in p.rglob("*") if f.suffix in (".json", ".html")) if p.is_dir() else [p]
+    files = collect_inputs(a.inputs)
+    if not a.out_json or not a.out_csv:
+        od = default_out_dir(a.inputs)
+        a.out_json = a.out_json or str(od / "confession_pages.json")
+        a.out_csv = a.out_csv or str(od / "confession_people.csv")
     pages = []
     for f in files:
         try:
@@ -604,9 +667,13 @@ def main():
     with open(a.out_csv, "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLS)
         w.writeheader()
+        all_rows = [row for rep in pages for row in csv_rows(rep, a.year)]
+        for row, (yard, calc) in zip(all_rows, fill_yards(all_rows)):
+            if calc:
+                row["yard"] = yard
+                row["flags"] = ";".join(x for x in ["yard_calc", row.get("flags") or ""] if x)
+            w.writerow(row); n += 1
         for rep in pages:
-            for row in csv_rows(rep, a.year):
-                w.writerow(row); n += 1
             cols = "; ".join(f"лист {h['no']}: " + ", ".join(f"{k}={v['cells']}" for k, v in h["columns"].items())
                              for h in rep.get("halves", []))
             print(f"стр. {rep.get('page')}: людей {len(rep.get('persons', []))} | {cols} | флаги: {rep['flags'] or '-'}")
