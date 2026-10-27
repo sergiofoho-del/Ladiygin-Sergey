@@ -1,7 +1,8 @@
 // Минимальная запись .xlsx без сторонних библиотек.
 // .xlsx = zip из XML-файлов. Строки хранятся как inlineStr, числа — как числа.
 // Использование: const bytes = await XlsxWriter.build([{name, rows, widths, styleAt, merges}]);
-// styleAt(r, c) -> номер стиля (XlsxWriter.STYLE) или undefined; merges — [[r1, c1, r2, c2], …] (с нуля, включительно).
+// styleAt(r, c) -> номер стиля (XlsxWriter.STYLE) или undefined; merges — [[r1, c1, r2, c2], …] (с нуля, включительно);
+// links — [[r, c, адрес], …]: гиперссылка ячейки (http(s) или относительный путь к файлу, например ../../Archive_Scans/x.jpg).
 (function (root) {
   const enc = new TextEncoder();
 
@@ -125,10 +126,11 @@
     return s;
   }
 
-  function sheetXml(rows, widths, styleAt, merges) {
+  function sheetXml(rows, widths, styleAt, merges, links) {
     const out = [];
     out.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
-    out.push('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">');
+    out.push('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+      'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">');
     out.push('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>');
     if (widths && widths.length) {
       out.push('<cols>');
@@ -161,25 +163,32 @@
       mg.forEach(([r1, c1, r2, c2]) => out.push(`<mergeCell ref="${colName(c1)}${r1 + 1}:${colName(c2)}${r2 + 1}"/>`));
       out.push('</mergeCells>');
     }
+    if (links && links.length) {
+      out.push('<hyperlinks>');
+      links.forEach(([r, c], i) => out.push(`<hyperlink ref="${colName(c)}${r + 1}" r:id="rIdL${i + 1}"/>`));
+      out.push('</hyperlinks>');
+    }
     out.push('</worksheet>');
     return out.join('');
   }
 
   // Стили: 0 обычный, 1 заголовок, 2 перенос строк, 3 НП (вертикально, заливка), 4 двор (заливка),
-  // 5 двор вычислен (другая заливка), 6 текст человека (перенос, по центру по высоте)
-  const STYLE = { NORMAL: 0, HEAD: 1, WRAP: 2, SETTLEMENT: 3, YARD: 4, YARD_CALC: 5, PERSON: 6 };
+  // 5 двор вычислен (другая заливка), 6 текст человека (перенос, по центру по высоте),
+  // 7 ссылка (синяя, подчёркнутая, по центру по высоте — для объединённых ячеек)
+  const STYLE = { NORMAL: 0, HEAD: 1, WRAP: 2, SETTLEMENT: 3, YARD: 4, YARD_CALC: 5, PERSON: 6, LINK: 7 };
   const thin = '<left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right>' +
     '<top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/>';
   const fill = (rgb) => `<fill><patternFill patternType="solid"><fgColor rgb="${rgb}"/><bgColor indexed="64"/></patternFill></fill>`;
   const STYLES =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font></fonts>' +
     '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
     fill('FFE2EFDA') + fill('FFFFF2CC') + fill('FFFCE4D6') + '</fills>' +
     `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${thin}</border></borders>` +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
     '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
@@ -189,6 +198,7 @@
     '<xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
     '<alignment horizontal="center" vertical="center"/></xf>' +
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
     '</cellXfs>' +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
@@ -238,7 +248,18 @@
     add('xl/_rels/workbook.xml.rels', rels);
 
     add('xl/styles.xml', STYLES);
-    sheets.forEach((s, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows, s.widths, s.styleAt, s.merges)));
+    sheets.forEach((s, i) => {
+      add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows, s.widths, s.styleAt, s.merges, s.links));
+      if (s.links && s.links.length) {
+        let lr = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+        s.links.forEach(([, , target], k) => {
+          lr += `<Relationship Id="rIdL${k + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" ` +
+            `Target="${xmlEscape(target)}" TargetMode="External"/>`;
+        });
+        add(`xl/worksheets/_rels/sheet${i + 1}.xml.rels`, lr + '</Relationships>');
+      }
+    });
 
     return makeZip(files);
   }
