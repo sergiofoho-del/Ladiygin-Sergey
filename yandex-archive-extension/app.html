@@ -93,9 +93,11 @@
       <span class="side right">Ревизские сказки</span>
     </label>
     <div class="muted" id="outFormatInfo"></div>
-    <label style="margin-top:10px"><input type="checkbox" id="saveScans"> <b>Сохранить Графические сканы?</b></label>
+    <label style="margin-top:10px"><input type="checkbox" id="saveScans"> <b>Сохранить Графические сканы?</b> — применить навык «Сохранить Скан» (Scrpt_YA_Orig_Scan)</label>
     <div class="muted">Оригинал скана каждой страницы (JPG, качество 40%, размер в пикселях как у оригинала) сохраняется в папку
-      «Archive_Scans» в выбранной папке (раздел 2), уже сохранённые сканы повторно не скачиваются. В Excel появляется столбец
+      «Archive_Scans». При кнопке «Выбрать куда сохранять Excel, и начать» папка «Archive_Scans» создаётся в выбранной папке
+      рядом с result.xlsx; при кнопке «Начать» — в папке из раздела 2. Если файл скана уже существует, он пропускается и
+      обработка переходит к следующему. В Excel появляется столбец
       «Локальная Ссылка на страницу» — ссылка на файл скана. Работает по логике скрипта Scrpt_YA_Orig_Scan.</div>
   </fieldset>
 
@@ -110,6 +112,7 @@
 
   <div class="row">
     <button id="startBtn" class="primary">Начать</button>
+    <button id="pickOutBtn" class="primary">Выбрать куда сохранять Excel, и начать</button>
     <button id="saveBtn" disabled>Сохранить сейчас</button>
     <button id="stopBtn" disabled>Остановить и сохранить</button>
   </div>

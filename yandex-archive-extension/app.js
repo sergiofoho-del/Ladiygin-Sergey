@@ -45,7 +45,8 @@
   let pageMeta = {};         // адрес страницы -> {cga, cgaUrl, scanName, scanFile, scanHref} для столбцов ссылок
   const SCAN_DIR = 'Archive_Scans';
   const SCAN_QUALITY = 0.4;  // JPG 40%, как в Scrpt_YA_Orig_Scan
-  let scanDir = null;        // FileSystemDirectoryHandle «Archive_Scans» в папке со ссылками
+  let scanDir = null;        // FileSystemDirectoryHandle «Archive_Scans» (в папке результатов или в папке со ссылками)
+  let outDir = null;         // папка, выбранная кнопкой «Выбрать куда сохранять Excel, и начать»: result.xlsx + Archive_Scans/
   let scanStats = { saved: 0, existed: 0, failed: 0, bytes: 0 };
 
   // ---------------------------------------------------------------- UI
@@ -95,6 +96,7 @@
 
   function setRunningUi(on) {
     $('startBtn').disabled = on;
+    $('pickOutBtn').disabled = on;
     $('linksFile').disabled = on;
     $('pickDirBtn').disabled = on;
     $('linksSel').disabled = on;
@@ -422,25 +424,35 @@
     const ci = ExcelSheets.crumbInfo(r.nextNode.crumbs, n, r.nextNode.id, r.origin);
     pageMeta[r.url] = Object.assign(pageMeta[r.url] || {}, { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName });
   }
+  // Папка сканов: «Archive_Scans» в папке результатов (outDir), иначе — в папке со ссылками.
   async function getScanDir() {
-    if (scanDir || !linksDir) return scanDir;
-    try { scanDir = await linksDir.getDirectoryHandle(SCAN_DIR, { create: true }); } catch (e) {
-      log(`Не удалось создать папку «${SCAN_DIR}» в ${linksDir.name} (${e.message}) — сканы пойдут в «Загрузки/${SCAN_DIR}/».`);
+    const base = outDir || linksDir;
+    if (scanDir || !base) return scanDir;
+    try { scanDir = await base.getDirectoryHandle(SCAN_DIR, { create: true }); } catch (e) {
+      log(`Не удалось создать папку «${SCAN_DIR}» в ${base.name} (${e.message}) — сканы пойдут в «Загрузки/${SCAN_DIR}/».`);
     }
     return scanDir;
   }
+  // Файл уже есть в Archive_Scans — не скачиваем его повторно и переходим к следующему.
   async function scanExists(name) {
     const d = await getScanDir();
     if (!d) return false;
-    try { const f = await (await d.getFileHandle(name)).getFile(); return f.size > 20000; } catch (e) { return false; }
+    try { await d.getFileHandle(name); return true; } catch (e) { return false; }
   }
+  // Ссылка из Excel на скан: result.xlsx в папке результатов -> «Archive_Scans/…»,
+  // result.xlsx в yaarchive_debug/<время>/ -> «../../Archive_Scans/…».
+  function scanHrefFor(name) { return outDir ? `${SCAN_DIR}/${name}` : `../../${SCAN_DIR}/${name}`; }
   // -> время, потраченное на скан (мс), чтобы сократить паузу между страницами
   async function saveScan(r, n) {
     const t0 = Date.now();
     const m = pageMeta[r.url];
     if (!m || !r.nextNode || !r.nextNode.id) return 0;
-    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: `../../${SCAN_DIR}/${m.scanName}` });
-    if (await scanExists(m.scanName)) { scanStats.existed++; setFile(); return 0; }
+    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: scanHrefFor(m.scanName) });
+    if (await scanExists(m.scanName)) {
+      scanStats.existed++; setFile();
+      log(`  стр. ${n}: скан ${m.scanName} уже есть — пропущен.`);
+      return 0;
+    }
     let res = null;
     try {
       const [inj] = await chrome.scripting.executeScript({ target: { tabId: r.tabId }, func: PageScripts.scanFetcher, args: [r.nextNode.id, SCAN_QUALITY] });
@@ -619,7 +631,21 @@
   // если выбран «спросить, куда сохранить» — ещё и копия в выбранный файл.
   async function saveResult(final) {
     const bytes = await XlsxWriter.build(buildSheets());
-    await saveOut('result.xlsx', new Blob([bytes], { type: XLSX_MIME }));
+    if (outDir) {
+      // папка, выбранная кнопкой «Выбрать куда сохранять Excel, и начать»: result.xlsx рядом с Archive_Scans/
+      writeChain = writeChain.then(async () => {
+        try {
+          const w = await (await outDir.getFileHandle('result.xlsx', { create: true })).createWritable();
+          await w.write(bytes); await w.close();
+        } catch (e) {
+          log(`Не удалось записать result.xlsx в ${outDir.name} (${e.message}) — сохраняю в папку запуска.`);
+          downloadToFolder('result.xlsx', new Blob([bytes], { type: XLSX_MIME }));
+        }
+      });
+      await writeChain;
+    } else {
+      await saveOut('result.xlsx', new Blob([bytes], { type: XLSX_MIME }));
+    }
     if (fileHandle) {
       try {
         const w = await fileHandle.createWritable();
@@ -629,7 +655,7 @@
         log('Не удалось записать в выбранный файл (' + e.message + ').');
       }
     }
-    if (final) log(`Excel сохранён: ${outLabel()} result.xlsx (дворов ${families.length}, страниц ${sheetRows.length}).`);
+    if (final) log(`Excel сохранён: ${outDir ? `«${outDir.name}/»` : outLabel()} result.xlsx (дворов ${families.length}, страниц ${sheetRows.length}).`);
     return true;
   }
 
@@ -779,7 +805,7 @@
       progressShow(true);
       if (settings.saveScans) {
         log(`Сканы: сохранено ${scanStats.saved} (${Math.round(scanStats.bytes / 1048576)} МБ), уже были ${scanStats.existed}, ` +
-            `не удалось ${scanStats.failed}. Папка: ${linksDir ? `«${linksDir.name}/${SCAN_DIR}/»` : `«Загрузки/${SCAN_DIR}/»`}.`);
+            `не удалось ${scanStats.failed}. Папка: ${outDir ? `«${outDir.name}/${SCAN_DIR}/»` : linksDir ? `«${linksDir.name}/${SCAN_DIR}/»` : `«Загрузки/${SCAN_DIR}/»`}.`);
       }
       try { await saveResult(true); } catch (e) { log('Не удалось сохранить: ' + e.message); }
       if ($('debugAll').checked && debugIndex.length) {
@@ -796,7 +822,7 @@
     }
   }
 
-  $('startBtn').addEventListener('click', async () => {
+  async function startRun(chosenOutDir) {
     if (running || busyPicking) return;
     if (!items.length) { setStatus('Сначала выберите HTML-файл со ссылками.'); return; }
     // доступ к запомненной папке подтверждается прямо по клику (без него — сохранение в «Загрузки»)
@@ -816,7 +842,26 @@
         log('Окно выбора файла недоступно (' + (e && e.message) + ').');
       }
     }
+    outDir = chosenOutDir || null;
+    scanDir = null;   // папка сканов определяется заново под выбранную папку результатов
+    if (outDir) log(`Папка результатов: «${outDir.name}» — result.xlsx${settings.saveScans ? ` и сканы в «${SCAN_DIR}/» (существующие файлы пропускаются)` : ''}.`);
     await run();
+  }
+  $('startBtn').addEventListener('click', () => startRun(null));
+  // «Выбрать куда сохранять Excel, и начать»: в выбранной папке — result.xlsx и папка Archive_Scans для сканов
+  $('pickOutBtn').addEventListener('click', async () => {
+    if (running || busyPicking) return;
+    if (!items.length) { setStatus('Сначала выберите HTML-файл со ссылками.'); return; }
+    if (!window.showDirectoryPicker) { setStatus('Этот Chrome не умеет выбирать папку — используйте кнопку «Начать».'); return; }
+    let h;
+    try { h = await window.showDirectoryPicker({ id: 'yaarchive-out', mode: 'readwrite' }); } catch (e) {
+      if (e && e.name === 'AbortError') { setStatus('Папка для Excel не выбрана.'); return; }
+      setStatus('Окно выбора папки недоступно (' + (e && e.message) + ').'); return;
+    }
+    if (settings.saveScans) {
+      try { await h.getDirectoryHandle(SCAN_DIR, { create: true }); } catch (e) { log(`Не удалось создать «${SCAN_DIR}» в ${h.name}: ${e.message}`); }
+    }
+    await startRun(h);
   });
 
   // ------------------------------------------------------------- старт
