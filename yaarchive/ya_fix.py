@@ -419,7 +419,7 @@ def analyze(ctx):
         return EC.ORDER_BEFORE_1750 if (year and year < 1750) else EC.ORDER_FROM_1750
     props = []
     for _doc, pp in by_doc(ctx.people).items():
-        props += an_settlement(pp, orders)
+        # НП «не определён» теперь заполняется сам (следующий определённый) — предложение не нужно
         props += an_yards(pp)
         props += an_numbers(pp)
         props += an_swap(pp, name_sex_of)
