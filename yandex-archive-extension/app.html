@@ -94,25 +94,26 @@
     </label>
     <div class="muted" id="outFormatInfo"></div>
     <label style="margin-top:10px"><input type="checkbox" id="saveScans"> <b>Сохранить Графические сканы?</b> — применить навык «Сохранить Скан» (Scrpt_YA_Orig_Scan)</label>
+    <label style="margin-left:22px"><input type="checkbox" id="scanPick"> Выбрать куда сохранить <span class="muted" id="scanPickInfo"></span></label>
     <div class="muted">Оригинал скана каждой страницы (JPG, качество 40%, размер в пикселях как у оригинала) сохраняется в папку
-      «Archive_Scans». При кнопке «Выбрать куда сохранять Excel, и начать» папка «Archive_Scans» создаётся в выбранной папке
-      рядом с result.xlsx; при кнопке «Начать» — в папке из раздела 2. Если файл скана уже существует, он пропускается и
-      обработка переходит к следующему. В Excel появляется столбец
-      «Локальная Ссылка на страницу» — ссылка на файл скана. Работает по логике скрипта Scrpt_YA_Orig_Scan.</div>
+      «Archive_Scans»: в выбранной папке (флажок «Выбрать куда сохранить»; если выбрана сама папка «Archive_Scans» — прямо в неё),
+      иначе — рядом с result.xlsx (если для него выбрана папка) или в папке из раздела 2. Если файл скана уже существует,
+      он пропускается. В Excel — столбец «Локальная Ссылка на страницу» (ссылка на файл скана; работает, когда папка сканов
+      лежит внутри папки результатов или папки со ссылками).</div>
   </fieldset>
 
   <fieldset>
     <legend>5. Настройки</legend>
     <label><input type="checkbox" id="showTab"> Показывать рабочую вкладку (если страницы не успевают прогружаться в фоне)</label>
     <label><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html, first_page_debug.json, first_page_next_data.json)</label>
-    <label><input type="checkbox" id="debugAll" checked> Сохранять отладочный пакет по КАЖДОЙ странице: данные страницы, результат привязки столбцов и сводка run_summary.json
-      (в папку «yaarchive_debug/&lt;время запуска&gt;/» рядом с файлом ссылок). Эту папку присылайте на анализ.</label>
-    <label><input type="checkbox" id="askSave"> Дополнительно спросить, куда сохранить копию Excel</label>
+    <label><input type="checkbox" id="debugAll" checked> Сохранять дополнительные отладочные файлы (результат привязки столбцов по каждой странице). Данные страниц и run_summary.json для общего скрипта yaarchive сохраняются всегда.</label>
+    <label><input type="checkbox" id="outPick"> <b>Выбрать куда сохранить</b> файл результатов result.xlsx <span class="muted" id="outPickInfo"></span></label>
+    <div class="muted">Без флажка result.xlsx сохраняется в папку запуска «yaarchive_debug/&lt;дата_время&gt;_v&lt;версия&gt;/» рядом с файлом ссылок.
+      Папки запоминаются; при следующем запуске Chrome один раз попросит подтвердить доступ.</div>
   </fieldset>
 
   <div class="row">
     <button id="startBtn" class="primary">Начать</button>
-    <button id="pickOutBtn" class="primary">Выбрать куда сохранять Excel, и начать</button>
     <button id="saveBtn" disabled>Сохранить сейчас</button>
     <button id="stopBtn" disabled>Остановить и сохранить</button>
   </div>
