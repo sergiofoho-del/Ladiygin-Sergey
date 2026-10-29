@@ -49,7 +49,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-VERSION = "3.0.1"
+VERSION = "3.1.0"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -170,6 +170,10 @@ def load_spravochniki(roots):
     EC.ORDER_FROM_1750 = list(np_["порядок_с_1750"])
     RP.REVISIONS = {int(k): v for k, v in SPR["ревизии"].items() if k.isdigit()}
     FX.LIMITS.update({k: v for k, v in SPR.get("проверки", {}).items() if not k.startswith("_")})
+    import ya_out
+    for k, v in SPR.get("цвета", {}).items():
+        if not k.startswith("_"):
+            ya_out.COLORS[k] = v
     exc = {k: v for k, v in SPR.get("отчества", {}).items() if not k.startswith("_")}
     base = getattr(RP, "_patronymic_rule", RP.patronymic)
     RP._patronymic_rule = base
@@ -182,6 +186,45 @@ def load_spravochniki(roots):
         return base(father, female)
     RP.patronymic = patronymic
     return src
+
+
+def fill_settlements(rows):
+    """«не определён (начало диапазона)» → название следующего определённого НП документа (иначе предыдущего)"""
+    und = lambda p: str(p["settlement"]).startswith("не определён")  # noqa: E731
+    i = 0
+    while i < len(rows):
+        if not und(rows[i]) or "settlement" in rows[i]["locked"]:
+            i += 1
+            continue
+        j = i
+        while j < len(rows) and und(rows[j]):
+            j += 1
+        name, how = (rows[j]["settlement"], "следующего") if j < len(rows) else (None, "")
+        if name is None:
+            k = i - 1
+            while k >= 0 and und(rows[k]):
+                k -= 1
+            name, how = (rows[k]["settlement"], "предыдущего") if k >= 0 else (None, "")
+        if name:
+            for k in range(i, j):
+                rows[k]["settlement"] = name
+                rows[k]["flags"].append(f"ⓘ НП взят из {how} определённого («{name}»)")
+        i = j
+
+
+def arrange_settlements(rows):
+    """повторный НП в документе одного года — сразу после первичного (по первым упоминаниям, порядок внутри сохраняется)"""
+    first, seg, start_page = {}, [], {}
+    for i, p in enumerate(rows):
+        first.setdefault(p["settlement"], i)
+        seg.append(seg[-1] + 1 if seg and rows[i - 1]["settlement"] != p["settlement"] else (seg[-1] if seg else 0))
+        start_page.setdefault(seg[-1], p["page"])
+    order = sorted(range(len(rows)), key=lambda i: (first[rows[i]["settlement"]], i))
+    for i in order:
+        f = first[rows[i]["settlement"]]
+        if seg[i] != seg[f] and (i == 0 or seg[i] != seg[i - 1]):
+            rows[i]["flags"].append(f"ⓘ повторный НП «{rows[i]['settlement']}» перенесён к первичному (было со стр. {start_page[seg[i]]})")
+    return [rows[i] for i in order]
 
 
 def canon_place(name):
@@ -359,7 +402,7 @@ def crumb_info(crumbs, page, node_id, origin="https://ya.ru"):
     def num(c):
         m = re.search(r"\d+[а-яА-Яa-zA-Z]?", str((c or {}).get("code") or ""))
         return m.group(0) if m else ""
-    parts = ["Главная", "Каталог"] + ([arch.get("name") or arch.get("code")] if arch else [])
+    parts = [arch.get("name") or arch.get("code")] if arch else []      # «ЦГА Москвы/Фонд 203/…/Скан 865» — текст
     parts += [f"Фонд {fund.get('code') or ''}"] if fund else []
     parts += [f"Опись {num(inv)}"] if inv else []
     parts += [f"Дело {file.get('code') or ''}"] if file else []
@@ -417,7 +460,7 @@ CONF_FLAG_RU = [
     (r"^age_zone_wide$", lambda m: "столбцы возраста дальше обычного от списка"),
 ]
 # пояснения (что сделал алгоритм) — не ошибки: в «Примечание», не в «Проверить»
-INFO_RX = re.compile(r"^(ⓘ|отчество образовано|номер семьи взят|НП по порядку|НП определён по порядку)")
+INFO_RX = re.compile(r"^(ⓘ|отчество образовано|номер семьи взят|НП по порядку|НП определён по порядку|НП взят|повторный НП)")
 
 
 def conf_flag(f):
@@ -747,7 +790,9 @@ def build(roots, out_dir, opts):
         rows = process_confession(d) if d["kind"] == KIND_CONF else process_revision(d)
         for p in rows:
             p["settlement"] = canon_place(p["settlement"])
+        fill_settlements(rows)                                       # 6а: «не определён» → следующий определённый
         corr.apply(rows, stage=1)                                   # 7: базовые значения
+        rows = arrange_settlements(rows)                             # 7а: повторный НП — к первичному
         if d["kind"] == KIND_CONF:
             for person, (yard, calc) in zip(rows, EC.fill_yards(rows)):   # 8: пустой двор
                 if calc and "yard" not in person["locked"]:

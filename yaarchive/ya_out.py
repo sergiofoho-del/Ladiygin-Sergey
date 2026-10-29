@@ -14,15 +14,59 @@ SNAP, PROPS = ".снимок.json", ".предложения.json"
 
 # столбцы листа «Люди»: (заголовок, поле, ширина, можно править)
 COLS = [
-    ("Год", "year", 6, False), ("Документ", "doc_kind", 14, False), ("Населённый пункт", "settlement", 9, True),
-    ("Двор / семья №", "yard", 8, True), ("Человек (как распознано)", "raw", 42, True), ("Имя", "first", 12, True),
-    ("Отчество", "patr", 14, True), ("Фамилия", "surname", 12, True), ("Пол", "sex", 5, True), ("Номер", "no", 7, True),
+    ("Год", "year", 7, False), ("Документ", "doc_kind", 14, False), ("Населённый пункт", "settlement", 9, True),
+    ("Двор / семья №", "yard", 8, True), ("Номер", "no", 7, True), ("Человек (как распознано)", "raw", 42, True),
+    ("Имя", "first", 12, True), ("Отчество", "patr", 14, True), ("Фамилия", "surname", 12, True), ("Пол", "sex", 5, True),
     ("Возраст", "age", 8, True), ("Возраст по прошлой ревизии", "age_prev", 10, True), ("Год рождения", "birth", 9, True),
     ("Родство", "relation", 24, True), ("Статус", "status", 10, False), ("Выбытие / примечание", "note", 22, False),
     ("Проверить", "flags_text", 40, False), ("Исправлено", "fixed_text", 30, False), ("ID", "id", 22, False),
     ("ID отца / мужа", "ref_id", 22, True), ("Ссылка на страницу", "url", 18, False),
-    ("Скан на диске", "scan_link", 18, False), ("Ссылка на ЦГА Москвы", "cga", 30, False), ("Ключ", "key", 10, False),
+    ("Локальная Ссылка на страницу", "scan_link", 30, False), ("Ссылка на ЦГА Москвы", "cga", 40, False), ("Ключ", "key", 10, False),
 ]
+# цвета (светлые, кроме красного) — как в расширении; справочник («цвета») может заменить
+COLORS = {"мужчины": "DDEBF7", "женщины": "F6E1F5", "ошибка": "FFC7CE", "НП_не_определён": "EDEDED",
+          "НП": {"село Троицкое": "E2EFDA", "деревня Острогина": "FFF2CC", "деревня Черепкова": "E4DFEC",
+                 "деревня Рублева": "D0ECE7", "деревня Луки": "FBE5D6", "деревня Мякинина": "EBF1DE",
+                 "деревня Екатериненская": "F2E8D5"},
+          "НП_прочие": ["E8F6EF", "F3EEDB", "EDE7F6", "E0F2F1", "FFF8E1", "F1F8E9", "E3F2FD", "FBE9E7"],
+          "дворы": ["FFF9E5", "EAF4DD", "F1ECF7", "E6F3F6", "FBF0E4", "EEF0F3"],
+          "слитые": ["F2F2F2", "E9EFF7", "EEF5E9", "F7F0E8"]}
+
+
+def settlement_color(name):
+    """цвет закреплён за названием НП: из справочника, иначе — по названию (одинаковый при каждом запуске)"""
+    n = str(name or "")
+    if not n or n.startswith("не определён"):
+        return COLORS["НП_не_определён"]
+    base = re.sub(r"^чужой НП:\s*", "", n)
+    if base in COLORS["НП"]:
+        return COLORS["НП"][base]
+    h = 0
+    for ch in base:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return COLORS["НП_прочие"][h % len(COLORS["НП_прочие"])]
+
+
+def error_fields(flags):
+    """в какие ячейки указывают замечания «Проверить» (они заливаются светло-красным)"""
+    out = {"flags_text"} if flags else set()
+    for t in flags:
+        t = t.lower()
+        if "двор" in t:
+            out.add("yard")
+        elif "номер" in t:
+            out.add("no")
+        if "без номера" in t:              # «возраст без номера человека» — ошибка в номере, не в возрасте
+            continue
+        if "возраст" in t or "год рождения" in t:
+            out.add("age")
+        if "год рождения" in t:
+            out.add("birth")
+        if any(w in t for w in ("имя", "пол по имени", "текст", "блок", "привязк")):
+            out.add("raw")
+        if "родств" in t or "отец" in t:
+            out.add("relation")
+    return out
 EDITABLE = {c[1]: c[0] for c in COLS if c[3]}
 
 
@@ -69,7 +113,7 @@ def write_excel(ctx, od, KIND_RU, version):
     from openpyxl.worksheet.merge import MergedCellRange
     fill = lambda c: PatternFill("solid", fgColor=c)  # noqa: E731
     F_HEAD, F_NP, F_YARD, F_CALC = fill("D9D9D9"), fill("E2EFDA"), fill("FFF2CC"), fill("FCE4D6")
-    F_CHECK, F_FIX, F_ASK = fill("FDE9E7"), fill("DDEBF7"), fill("FFFF99")
+    F_CHECK, F_FIX, F_ASK = fill(COLORS["ошибка"]), fill("DDEBF7"), fill("FFFF99")
     thin = Side(style="thin", color="BFBFBF")
     BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
     BOLD, LINK = Font(bold=True), Font(color="0563C1", underline="single")
@@ -88,50 +132,77 @@ def write_excel(ctx, od, KIND_RU, version):
     people = ctx.people
     for p in people:
         ws.append([val(p, c[1]) for c in COLS])
+    n = len(people)
+    # постранично: одна слитая ячейка «Год», «Ссылка на страницу», «Локальная Ссылка…», «Ссылка на ЦГА Москвы»
+    page_key = lambda p: (p["doc"], p["page"])  # noqa: E731
+    page_run, yard_run, k1, k2 = [], [], -1, -1
+    for i, p in enumerate(people):
+        if i == 0 or page_key(p) != page_key(people[i - 1]):
+            k1 += 1
+        page_run.append(k1)
+        yk = (p["doc"], p["settlement"], p["yard"], p["yard_calc"]) if p["yard"] != "" else ("·", i)
+        if i == 0 or yk != ((people[i - 1]["doc"], people[i - 1]["settlement"], people[i - 1]["yard"], people[i - 1]["yard_calc"])
+                            if people[i - 1]["yard"] != "" else ("·", i - 1)):
+            k2 += 1
+        yard_run.append(k2)
+    fill_cache = {}
+
+    def F(rgb):
+        if rgb not in fill_cache:
+            fill_cache[rgb] = fill(rgb)
+        return fill_cache[rgb]
+    C_NP = Alignment(horizontal="center", vertical="center", text_rotation=90, wrap_text=True)
+    C_MID = Alignment(horizontal="center", vertical="center")
+    C_V = Alignment(vertical="center", wrap_text=True)
+    ITAL = Font(bold=True, italic=True)
+    page_cols = {ci["year"], ci["url"], ci["scan_link"], ci["cga"]}
     for r, p in enumerate(people, 2):
+        errs = error_fields(p["flags"])
+        sex_fill = F(COLORS["женщины"] if p["sex"] == "ж" else COLORS["мужчины"]) if p["sex"] in ("м", "ж") else None
+        for f, c in ci.items():
+            cell = ws.cell(r, c)
+            if f == "settlement":
+                cell.fill, cell.font, cell.border, cell.alignment = F(settlement_color(p["settlement"])), BOLD, BORDER, C_NP
+            elif f == "yard":
+                cell.fill = F(COLORS["ошибка"]) if "yard" in errs else F(COLORS["дворы"][yard_run[r - 2] % len(COLORS["дворы"])])
+                cell.font, cell.border, cell.alignment = (ITAL if p["yard_calc"] else BOLD), BORDER, C_MID
+            elif c in page_cols:
+                cell.fill, cell.border, cell.alignment = F(COLORS["слитые"][page_run[r - 2] % len(COLORS["слитые"])]), BORDER, \
+                    (C_MID if f == "year" else C_V)
+            elif f == "key":
+                continue
+            else:
+                cell.border = BORDER
+                if f in errs:
+                    cell.fill = F(COLORS["ошибка"])
+                elif sex_fill is not None:
+                    cell.fill = sex_fill
+                cell.alignment = C_V if f in ("raw", "flags_text", "fixed_text", "note", "relation") else C_MID
         if p["url"]:
             c = ws.cell(r, ci["url"])
             c.value, c.hyperlink, c.font = f"стр. {p['page']}", p["url"], LINK
         if p["scan_link"]:
             c = ws.cell(r, ci["scan_link"])
             c.value, c.hyperlink, c.font = Path(p["scan_link"]).name, p["scan_link"], LINK
-        if p.get("cga_url") and p["cga"]:
-            c = ws.cell(r, ci["cga"])
-            c.hyperlink, c.font = p["cga_url"], LINK
-        ws.cell(r, ci["raw"]).alignment = WRAP
-        if p["flags"]:
-            ws.cell(r, ci["flags_text"]).fill = F_CHECK
-            ws.cell(r, ci["raw"]).fill = F_CHECK
-            ws.cell(r, ci["flags_text"]).alignment = WRAP
-        if p["fixed"]:
-            ws.cell(r, ci["fixed_text"]).fill = F_FIX
-            ws.cell(r, ci["fixed_text"]).alignment = WRAP
 
-    def runs(col, key, style):
+    def merge_runs(col, key):
         st = 0
-        for i in range(1, len(people) + 1):
-            if i == len(people) or key(people[i]) != key(people[st]):
+        for i in range(1, n + 1):
+            if i == n or key(people[i]) != key(people[st]):
                 r1, r2 = st + 2, i + 1
-                if r2 > r1:                     # без проверки пересечений openpyxl (она квадратичная): диапазоны не пересекаются
+                if r2 > r1:
+                    for rr in range(r1 + 1, r2 + 1):
+                        ws.cell(rr, col).value = None
                     mcr = MergedCellRange(ws, f"{ws.cell(r1, col).coordinate}:{ws.cell(r2, col).coordinate}")
-                    ws.merged_cells.ranges.add(mcr)
+                    ws.merged_cells.ranges.add(mcr)       # без квадратичной проверки openpyxl: диапазоны не пересекаются
                     ws._clean_merge_range(mcr)
-                for rr in range(r1, r2 + 1):
-                    style(ws.cell(rr, col), people[st])
                 st = i
-
-    def st_np(c, p):
-        c.fill, c.border, c.font = F_NP, BORDER, BOLD
-        c.alignment = Alignment(horizontal="center", vertical="center", text_rotation=90, wrap_text=True)
-
-    def st_yard(c, p):
-        c.fill, c.border, c.font = (F_CALC if p["yard_calc"] else F_YARD), BORDER, BOLD
-        c.alignment = Alignment(horizontal="center", vertical="center")
     if people:
-        runs(ci["settlement"], lambda p: (p["doc"], p["settlement"]), st_np)
-        runs(ci["yard"], lambda p: (p["doc"], p["settlement"], p["yard"], p["yard_calc"]) if p["yard"] != "" else id(p), st_yard)
-        runs(ci["url"], lambda p: (p["url"], p["page"]), lambda c, p: setattr(c, "alignment", Alignment(vertical="center")))
-    ws.freeze_panes = "F2"
+        merge_runs(ci["settlement"], lambda p: (p["doc"], p["settlement"]))
+        merge_runs(ci["yard"], lambda p: (p["doc"], p["settlement"], p["yard"], p["yard_calc"]) if p["yard"] != "" else id(p))
+        for f in ("year", "url", "scan_link", "cga"):
+            merge_runs(ci[f], page_key)
+    ws.freeze_panes = "G2"
     ws.auto_filter.ref = f"A1:{ws.cell(1, len(COLS) - 1).column_letter}{len(people) + 1}"
 
     # ---- Исправления
@@ -267,8 +338,11 @@ def about_lines(ctx, version):
         "НП по справочнику → принятые исправления значений → пустой двор по соседям → родство и отчество → принятые "
         "исправления родства → год рождения → сканы → проверка → навык «Исправление ошибок» → итог.",
         "",
-        "Цвета листа «Люди»: зелёный — населённый пункт (объединён до следующего), жёлтый — двор, оранжевый — двор вычислен "
-        "по соседним, розовый — есть что проверить, голубой — применено исправление.",
+        "Лист «Люди»: у всех людей одной страницы одна слитая ячейка «Год», «Ссылка на страницу», «Локальная Ссылка на "
+        "страницу» и «Ссылка на ЦГА Москвы» (текст). Цвета (светлые, кроме красного): у каждого НП свой цвет, закреплённый за "
+        "названием; дворы и блоки страниц — чередуются; строки мужчин — голубые, женщин — розовые; ячейки с ошибками — "
+        "светло-красные; двор курсивом — вычислен по соседним. «Не определён» НП получает название следующего определённого; "
+        "повторный НП в документе перенесён сразу после первичного.",
         "Год рождения = год документа − возраст (±1 год). В GEDCOM каждая запись документа — отдельная персона: один и тот же "
         "человек в разные годы не объединён.",
         "Исправления: лист «Исправления» («да»/«нет», сохранить файл) или диалог в окне скрипта. Правки, сделанные прямо в листе "
