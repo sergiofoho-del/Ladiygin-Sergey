@@ -58,7 +58,7 @@ def make_root(tmp):
 
 
 def run(root):
-    Y.main([str(root), "--once", "--no-dialog"])
+    Y.main([str(root), "--once", "--no-auto"])
     out = root / "Итог"
     return json.loads((out / "Итог_люди.json").read_text(encoding="utf-8")), out
 
@@ -120,12 +120,19 @@ def main():
         import os
         os.utime(x, (time.time() - 5, time.time() - 5))
         fb = FX.read_excel_feedback(out)
-        man = FX.load_manual(out)
-        check(fb and any(p["new"] == "77" for p in man.values()), f"ручная правка найдена и ждёт подтверждения ({fb})")
+        dec = FX.Corrections(out).data["правки"]
+        check(fb and any(c.get("new") == "77" for v in dec.values() for c in v.values()), f"ручная правка сохранена без вопроса ({fb})")
         FX.Corrections(out).undo(yes["id"])
         data3, _ = run(root)
         p3 = next(p for p in data3["people"] if p["key"] == key)
         check(not p3["fixed"] or all(field not in f for f in p3["fixed"]), "«отменить»: правка снята")
+        # 3.2.0: без диалогов — надёжные исправления применяются сами
+        Y.main([str(root), "--once"])
+        props4 = json.loads((out / ".предложения.json").read_text(encoding="utf-8"))
+        hist = FX.Corrections(out).data["решения"]
+        auto = [d for d in hist.values() if d["source"] == "автоматически"]
+        check(auto and all(d["type"] in FX.AUTO_TYPES for d in auto) and not any(p["type"] in FX.AUTO_TYPES for p in props4.values()),
+              f"автоматически применено {len(auto)}, спорных осталось {len(props4)}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("ИТОГ:", "OK" if ok else "ЕСТЬ ОШИБКИ")

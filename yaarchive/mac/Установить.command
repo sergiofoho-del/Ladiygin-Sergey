@@ -3,7 +3,7 @@
 # Первый запуск: правый щелчок по этому файлу → «Открыть» → «Открыть» (macOS спросит один раз).
 # Что делает:
 #   1) снимает блокировку macOS (карантин) с файлов комплекта;
-#   2) находит Python 3.8+ или помогает его установить;
+#   2) находит Python 3.8+ (нужен только общему скрипту; без Python ставится одно расширение);
 #   3) ставит библиотеку openpyxl (для Excel);
 #   4) кладёт общий скрипт в папку, где лежит list_links.html (выбираете вы);
 #   5) копирует расширение Chrome в «Документы/yandex-archive-extension» и открывает страницу расширений;
@@ -54,16 +54,20 @@ find_python() {
   return 1
 }
 PY="$(find_python)"
+SCRIPT=1
 if [ -z "$PY" ]; then
   say "2/6 Python 3 не найден."
-  ans="$(dialog "Для общего скрипта нужен Python 3 (бесплатно).\n\nВариант 1 (проще): «Инструменты Apple» — macOS сама установит Python 3.8 вместе с инструментами разработчика (около 10 минут).\nВариант 2: установщик с python.org (Python 3.12).\n\nПосле установки запустите «Установить.command» ещё раз." "Инструменты Apple,python.org,Отмена")"
+  ans="$(dialog "Расширению Chrome Python не нужен: оно само делает Excel с результатами.\n\nPython 3 нужен только общему скрипту yaarchive (GEDCOM для MyHeritage, итог по всем загрузкам). Его можно поставить позже и запустить установку ещё раз.\n\nЧто сделать?" "Только расширение,Инструменты Apple,python.org")"
   case "$ans" in
-    "Инструменты Apple") xcode-select --install >/dev/null 2>&1; say "Открыто окно установки инструментов Apple. После неё запустите установку снова.";;
-    "python.org") open "https://www.python.org/downloads/macos/"; say "Открыт python.org. Скачайте «macOS 64-bit universal2 installer», установите и запустите установку снова.";;
+    "Инструменты Apple") xcode-select --install >/dev/null 2>&1; say "Открыто окно установки инструментов Apple. После неё запустите установку снова."; echo; read -p "Нажмите Enter, чтобы закрыть окно…" _; exit 0;;
+    "python.org") open "https://www.python.org/downloads/macos/"; say "Открыт python.org. Скачайте «macOS 64-bit universal2 installer», установите и запустите установку снова."; echo; read -p "Нажмите Enter, чтобы закрыть окно…" _; exit 0;;
   esac
-  echo; read -p "Нажмите Enter, чтобы закрыть окно…" _; exit 0
+  SCRIPT=0
+  say "   ставлю только расширение (скрипт — позже, по желанию)."
+else
+  say "2/6 Python: $PY ($("$PY" -c 'import platform; print(platform.python_version())'))"
 fi
-say "2/6 Python: $PY ($("$PY" -c 'import platform; print(platform.python_version())'))"
+if [ "$SCRIPT" = 1 ]; then
 
 # 3) openpyxl
 if ! "$PY" -c 'import openpyxl' >/dev/null 2>&1; then
@@ -85,7 +89,7 @@ fi
 cp -f "$PYZ_SRC" "$DEST/yaarchive.pyz" || fail "Не удалось записать в «$DEST»."
 cat > "$DEST/yaarchive_запуск.command" <<EOF
 #!/bin/bash
-# yaarchive — следить за этой папкой: новые пакеты расширения обрабатываются сами, итог — в папке «Итог».
+# yaarchive — обработать все загрузки расширения в этой папке (без вопросов) и открыть Итог/Итог_люди.xlsx.
 cd "\$(dirname "\$0")"
 PY="$PY"
 [ -x "\$PY" ] || PY="\$(command -v python3)"
@@ -96,6 +100,7 @@ chmod +x "$DEST/yaarchive_запуск.command"
 cp -f "$KIT/2_Скрипт/Инструкция_yaarchive.md" "$DEST/" 2>/dev/null
 xattr -dr com.apple.quarantine "$DEST/yaarchive.pyz" "$DEST/yaarchive_запуск.command" 2>/dev/null
 say "4/6 Скрипт установлен: $DEST"
+fi
 
 # 5) расширение Chrome
 if [ -d "$EXT_DST" ]; then
@@ -110,15 +115,20 @@ NEWV="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$EXT_DST/manifest.json" | h
 say "5/6 Расширение $NEWV скопировано: $EXT_DST (путь — в буфере обмена)"
 
 # 6) проверка скрипта
-V="$("$PY" "$DEST/yaarchive.pyz" --version 2>>"$LOG")" || fail "Скрипт не запускается (подробности — в установка_журнал.txt)."
-say "6/6 Проверка: yaarchive $V запускается."
+if [ "$SCRIPT" = 1 ]; then
+  V="$("$PY" "$DEST/yaarchive.pyz" --version 2>>"$LOG")" || fail "Скрипт не запускается (подробности — в установка_журнал.txt)."
+  say "6/6 Проверка: yaarchive $V запускается."
+fi
 line
 
 open -a "Google Chrome" "chrome://extensions/" >/dev/null 2>&1 || open -a "Google Chrome" >/dev/null 2>&1
 dialog "Осталось подключить расширение в Chrome (страница расширений уже открыта):\n\n1. Справа вверху включите «Режим разработчика».\n2. Если расширение «Яндекс Архив» уже есть — удалите старое (или нажмите у него «Обновить», если оно было из Документы/yandex-archive-extension).\n3. «Загрузить распакованное расширение» → в окне нажмите Cmd+Shift+G → Cmd+V (путь уже скопирован) → Enter → «Выбрать».\n\nДолжна появиться версия $NEWV." "Готово" >/dev/null
 
-ans="$(dialog "Установка завершена.\n\nСкрипт: $DEST\nРасширение: $EXT_DST\n\nЗапускать скрипт: двойной щелчок по «yaarchive_запуск.command» в папке со ссылками — он будет следить за папкой и сам обрабатывать новые загрузки расширения.\n\nЗапустить сейчас?" "Запустить,Позже")"
 say "Установка завершена."
-if [ "$ans" = "Запустить" ]; then open "$DEST/yaarchive_запуск.command"; fi
-open "$DEST"
+if [ "$SCRIPT" = 1 ]; then
+  dialog "Установка завершена.\n\nРасширение: $EXT_DST\nСкрипт (по желанию): $DEST\n\nОсновная работа — в расширении: оно само делает Excel. Скрипт yaarchive вопросов не задаёт: двойной щелчок по «yaarchive_запуск.command» — он обработает все загрузки в папке и откроет Итог/Итог_люди.xlsx (там же GEDCOM для MyHeritage)." "Готово" >/dev/null
+  open "$DEST"
+else
+  dialog "Установка завершена.\n\nРасширение: $EXT_DST\n\nОно само делает Excel с результатами. Скрипт yaarchive (GEDCOM, итог по всем загрузкам) можно поставить позже: установите Python 3 и запустите «Установить.command» ещё раз." "Готово" >/dev/null
+fi
 echo; read -p "Нажмите Enter, чтобы закрыть окно…" _

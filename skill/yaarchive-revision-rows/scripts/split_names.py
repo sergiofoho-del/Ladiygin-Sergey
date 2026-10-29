@@ -39,6 +39,29 @@ def names():
     return _names
 
 
+def loose(k):
+    """ключ для старых и народных написаний: аканье (о→а), е→и, без ь, конечный й→и, без удвоений
+    («огрофена» = «аграфена», «серьгеи» = «сергей», «пракофеи» = «прокофей», «ефимя» = «ефимья»)"""
+    k = k.replace("ь", "").replace("о", "а").replace("е", "и").replace("й", "и")
+    return re.sub(r"(.)\1+", r"\1", k)
+
+
+_loose = {}
+
+
+def loose_sex(k):
+    """пол по свободному ключу; None — нет или неоднозначно"""
+    N = names()
+    if not _loose or _loose.get("_n") != (len(N["M"]), len(N["F"])):
+        _loose.clear()
+        for sx in ("M", "F"):
+            for n in N[sx]:
+                _loose.setdefault(loose(n), set()).add(sx)
+        _loose["_n"] = (len(N["M"]), len(N["F"]))
+    hit = _loose.get(loose(k))
+    return next(iter(hit)) if hit and len(hit) == 1 else None
+
+
 def _edit1(a, b):
     if a == b:
         return True
@@ -79,6 +102,16 @@ def name_sex(tok, nxt=(), prv=()):
         return "F", ref
     if gen_form or re.search(r"(ов|ев|ин|ова|ева|ина|ича|вна|овы|евы)$", k):
         return None
+    # «депетр», «дефеодор»: сокращение «де(ти)», приклеенное распознаванием к имени
+    if k.startswith("де") and len(k) >= 6 and k not in N["M"] | N["F"]:
+        r = k[2:]
+        sx = "M" if r in N["M"] else "F" if r in N["F"] else loose_sex(r)
+        if sx:
+            return sx, False
+    if len(k) >= 4:
+        sx = loose_sex(k)
+        if sx:
+            return sx, False
     if len(k) >= 5:
         hits = {s for s in ("M", "F") for n in N[s] if abs(len(n) - len(k)) <= 1 and n[:1] == k[:1] and _edit1(k, n)}
         if len(hits) == 1:

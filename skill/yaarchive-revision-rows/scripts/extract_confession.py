@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from split_names import split_block  # noqa: E402
+from split_names import split_block, name_sex  # noqa: E402
 
 NEXT_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 _MAP = str.maketrans({"ѣ": "е", "і": "и", "i": "и", "ѳ": "ф", "ѵ": "и", "ё": "е", "ѡ": "о", "ꙋ": "у", "ѯ": "кс"})
@@ -44,6 +44,7 @@ SETTLEMENTS = {
     "деревня Рублева": r"рублев",
     "деревня Луки": r"лук(?:и|ъ)?\b",
     "деревня Мякинина": r"(?:м[яе]кинин|мемин)",
+    "деревня Екатериненская": r"екатерин\w*ск",
 }
 SETTLE_PREFIX = r"(?:\bсел\w*\.?|\bдер\w*\.?|\bдрв\w*|\bд\.|\bс\.)\s*[\[(«\"]?\s*"
 SAME_VILLAGE = re.compile(r"\bтого\s+сел")        # «Того Села крестьянство» = село прихода
@@ -128,6 +129,32 @@ def classify(b):
     b.kind = "text"
 
 
+# итоговые и служебные фразы ведомости («Сверхъ вышеписаннаго… прописныхъ и утаенныхъ дворовъ…», «…руку приложилъ»)
+BOILER_RX = re.compile(r"(вышеписан|исповедал|причасти|показан[ыо]|приложил|по указу|сказк|утаен|прописн|обретает|"
+                       r"всего при|подлинно|руку|мужеска пола|женска пола)")
+
+
+def boilerplate(text):
+    """служебный текст, а не список семьи: служебные слова и не больше одного имени"""
+    if not BOILER_RX.search(norm(text)):
+        return False
+    return sum(1 for t in text.split() if name_sex(t)) <= 1
+
+
+# заголовок НП начинается с «Деревни/Села/д./с.» — может быть длинным
+# («Деревни Мякининой Генералъ-Лейтенанта Бутурлина, Времянно Обязанные крестьяне»)
+HEAD_START = re.compile(r"^\W*(?:дер\w*|дрв\w*|сел\w*|д\.|с\.|того\s+сел)")
+
+
+def settlement_header(text, n_letters):
+    """(НП, как) для блока-заголовка НП или (None, None)"""
+    n = norm(text)
+    name, how = settlement_of(text)
+    if name and (n_letters < 45 or (HEAD_START.search(n) and n_letters < 140)):
+        return name, how
+    return None, None
+
+
 def settlement_of(text):
     n = norm(text)
     if SAME_VILLAGE.search(n):
@@ -146,7 +173,8 @@ def settlement_of(text):
 
 
 SETTLE_STEMS = {"село Троицкое": "троицк", "деревня Острогина": "острогин", "деревня Черепкова": "черепков",
-                "деревня Рублева": "рублев", "деревня Мякинина": "мякинин"}
+                "деревня Рублева": "рублев", "деревня Мякинина": "мякинин",
+                "деревня Екатериненская": "екатерин"}
 
 
 def lev(a, b):
@@ -210,6 +238,72 @@ def cluster_columns(blocks, gap, ymid, slope):
         cols.append({"blocks": sorted((b for _, b in g), key=lambda b: b.cy), "b": slope,
                      "center": statistics.median(x for x, _ in g)})
     return sorted(cols, key=lambda c: c["center"])
+
+
+def _increasing_breaks(blocks):
+    """сколько раз номера сверху вниз идут не подряд (0 < шаг <= 3)"""
+    vals = [v for b in sorted(blocks, key=lambda b: b.cy) for v in b.vals if str(v).isdigit()]
+    vals = [int(v) for v in vals]
+    return sum(1 for x, y in zip(vals, vals[1:]) if not (0 < y - x <= 3)), len(vals)
+
+
+def split_number_column(col, slope, ymid, med_w):
+    """номера мужчин и женщин в двух узких столбцах вплотную слиплись в один: делим по x (как возраст) и проверяем,
+    что в каждой части номера идут подряд, а вместе — нет. -> (мужчины, женщины) или None"""
+    sp = split_age_column(col, slope, ymid, med_w, min_sep=0.15)
+    if not sp:
+        return None
+    (b1, n1), (b2, n2), (ball, nall) = _increasing_breaks(sp[0]["blocks"]), _increasing_breaks(sp[1]["blocks"]), \
+        _increasing_breaks(col["blocks"])
+    if n1 >= 3 and n2 >= 3 and b1 <= 0.25 * n1 and b2 <= 0.25 * n2 and ball > 0.3 * nall:
+        return sp
+    return None
+
+
+def split_age_column(col, slope, ymid, med_w, min_sep=0.8):
+    """один найденный столбец возраста, а номеров два (мужчины и женщины): столбцы «лѣта мужеска / женска» узкие и
+    стоят вплотную, отдельные цифры между ними сливают их в один. Делим на два по x' (2-средних): -> (левый, правый)
+    или None, если двух столбцов нет"""
+    xs = [(b.cx - slope * (b.cy - ymid), b) for b in col["blocks"]]
+    if len(xs) < 6:
+        return None
+    lo, hi = min(x for x, _ in xs), max(x for x, _ in xs)
+    for _ in range(25):
+        a = [x for x, _ in xs if abs(x - lo) <= abs(x - hi)]
+        b = [x for x, _ in xs if abs(x - lo) > abs(x - hi)]
+        if not a or not b:
+            return None
+        nlo, nhi = statistics.mean(a), statistics.mean(b)
+        if (nlo, nhi) == (lo, hi):
+            break
+        lo, hi = nlo, nhi
+    left = [bk for x, bk in xs if abs(x - lo) <= abs(x - hi)]
+    right = [bk for x, bk in xs if abs(x - lo) > abs(x - hi)]
+
+    # уточнение: у каждого столбца свой наклон (лист изогнут) — прямая x = a + b·y по каждой группе,
+    # число относится к ближайшей прямой
+    def fit(bl):
+        ys = [b.cy for b in bl]
+        my, mx = statistics.mean(ys), statistics.mean(b.cx for b in bl)
+        syy = sum((y - my) ** 2 for y in ys)
+        k = sum((b.cy - my) * (b.cx - mx) for b in bl) / syy if syy else 0.0
+        return mx - k * my, k
+    for _ in range(10):
+        if len(left) < 3 or len(right) < 3:
+            break
+        (a1, k1), (a2, k2) = fit(left), fit(right)
+        nl = [b for b in col["blocks"] if abs(b.cx - (a1 + k1 * b.cy)) <= abs(b.cx - (a2 + k2 * b.cy))]
+        nr = [b for b in col["blocks"] if abs(b.cx - (a1 + k1 * b.cy)) > abs(b.cx - (a2 + k2 * b.cy))]
+        if {b.id for b in nl} == {b.id for b in left}:
+            break
+        left, right = nl, nr
+    if len(left) >= 3 and len(right) >= 3:
+        (a1, k1), (a2, k2) = fit(left), fit(right)
+        lo, hi = a1 + k1 * ymid, a2 + k2 * ymid
+    if hi - lo < min_sep * med_w or min(len(left), len(right)) < 0.2 * len(xs):
+        return None
+    mk = lambda bl, c: {"blocks": sorted(bl, key=lambda b: b.cy), "b": slope, "center": c}  # noqa: E731
+    return mk(left, lo), mk(right, hi)
 
 
 def stable_by_y(blocks, eps):
@@ -423,16 +517,21 @@ def process(node, a):
     for b in body:
         if b.kind != "text":
             continue
-        name, how = settlement_of(b.text)
-        if name and letters(b.text) < 45:
+        name, how = settlement_header(b.text, letters(b.text))
+        if name:
             settle_blocks.append((b, name, how))
-            continue
-        if b.w >= a.main_min_w * W and letters(b.text) >= 10:
+            if letters(b.text) < 45:
+                continue
+            # распознавание склеило заголовок с первой семьёй («дрвни рублева крестьяня вдова Ирина…») —
+            # блок и заголовок НП, и текст людей
+        if b.w >= a.main_min_w * W and letters(b.text) >= 10 and not boilerplate(b.text):
             cand.append(b)
     # заголовок НП может стоять и в шапке страницы
     for b in heads + [x for x in blks if x.cy <= hdr_bottom and x.kind == "text"]:
-        name, how = settlement_of(b.text)
+        name, how = settlement_header(b.text, 0)
         if name and all(b is not s[0] for s in settle_blocks):
+            # заголовок всей ведомости («Вѣдомость духовная… въ селѣ Троицкомъ») тоже задаёт НП: сразу после него —
+            # духовенство села (священник, дьячок…), а заголовок деревни идёт ниже
             settle_blocks.append((b, name, how))
     groups = []
     for b in sorted(cand, key=lambda b: b.cx):
@@ -503,8 +602,14 @@ def process(node, a):
         if len(pick) == 2:
             # два столбца: редкий левый — это двор (номер стоит только у первого в семье)
             if len(pick[0]["blocks"]) < 0.45 * len(pick[1]["blocks"]):
-                names = ["yard", "m_no"]
-                rep["flags"].append(f"half{hf['no']}:left_columns_2_sex_unknown")
+                sp = split_number_column(pick[1], slope, ymid, med_w)
+                if sp:                         # номера мужчин и женщин слиплись в один столбец — разделены
+                    pick = [pick[0], sp[0], sp[1]]
+                    names = ["yard", "m_no", "f_no"]
+                    rep["flags"].append(f"half{hf['no']}:number_column_split")
+                else:
+                    names = ["yard", "m_no"]
+                    rep["flags"].append(f"half{hf['no']}:left_columns_2_sex_unknown")
             else:
                 names = ["m_no", "f_no"]
                 rep["flags"].append(f"half{hf['no']}:yard_column_not_found")
@@ -518,7 +623,15 @@ def process(node, a):
             roles[nm] = c
         for c in rcols[2:]:
             rep["skipped"]["show_columns"] += len(c["blocks"])
-        if len(rpick) < 2:
+        if len(rpick) == 1 and "m_no" in roles and "f_no" in roles:
+            sp = split_age_column(rpick[0], slope, ymid, med_w)
+            if sp:                                   # два слипшихся столбца возраста разделены
+                roles["age_m"], roles["age_f"] = sp
+                rep["flags"].append(f"half{hf['no']}:age_column_split")
+            else:                                    # разделить нельзя — возраст к человеку любого пола по строке
+                roles["age_any"] = roles.pop("age_m")
+                rep["flags"].append(f"half{hf['no']}:age_by_row")
+        elif len(rpick) < 2:
             rep["flags"].append(f"half{hf['no']}:age_columns_{len(rpick)}")
         hf["columns"] = {nm: {"center_x": round(c["center"]), "center_x_rel": round(c["center"] / W, 4),
                               "slope": round(c["b"], 4), "cells": len(c["blocks"])} for nm, c in roles.items()}
@@ -536,9 +649,9 @@ def process(node, a):
         # возраст: пара «номер — возраст» по y. Сдвиг строки между левыми и правыми столбцами зависит от y
         # (поворот и изгиб листа у корешка), поэтому он оценивается прямой shift(y) по надёжным парам,
         # а затем последовательности выравниваются с сохранением порядка (без перекрёстных пар).
-        for sex, role in (("M", "age_m"), ("F", "age_f")):
+        for sex, role in (("M", "age_m"), ("F", "age_f"), (None, "age_any")):
             ages = stable_by_y(roles.get(role, {"blocks": []})["blocks"], 0.15 * med_h)
-            cands = sorted([p for p in people if p["sex"] == sex], key=lambda p: p["cy"])
+            cands = sorted([p for p in people if sex is None or p["sex"] == sex], key=lambda p: p["cy"])
             pairs = sorted(((abs(ag.cy - p["cy"]), i, j) for i, ag in enumerate(ages)
                             for j, p in enumerate(cands)), key=lambda t: t[0])
             used_a, used_p, first = set(), set(), []
@@ -556,9 +669,30 @@ def process(node, a):
                 cands[j]["age_id"] = ages[i].id
             for i, ag in enumerate(ages):
                 if i not in used_a:
-                    people.append({"sex": sex, "no": "", "age": ag.vals[0] if ag.vals else ag.text,
-                                   "cy": ag.cy - sh(ag.cy), "age_id": ag.id, "flags": ["age_without_number"]})
+                    people.append({"sex": sex or "M", "no": "", "age": ag.vals[0] if ag.vals else ag.text,
+                                   "cy": ag.cy - sh(ag.cy), "age_id": ag.id,
+                                   "flags": ["age_without_number"] + ([] if sex else ["sex_unknown"])})
         people.sort(key=lambda p: p["cy"])
+        # возраст на последней строке многострочной записи («Степанова жена Марѳа Сте-/панова … 32»): возраст без
+        # номера отдаётся ближайшему выше человеку того же пола с номером, но без возраста (до 2,5 строк, без чужих между)
+        for q in [x for x in people if "age_without_number" in x["flags"]]:
+            up = [x for x in people if x is not q and x["no"] != "" and x["age"] == "" and x["cy"] < q["cy"]
+                  and q["cy"] - x["cy"] <= 2.5 * med_h and ("sex_unknown" in q["flags"] or x["sex"] == q["sex"])]
+            if not up:
+                continue
+            best = max(up, key=lambda x: x["cy"])
+            if any(x is not q and x is not best and best["cy"] < x["cy"] < q["cy"] and x["sex"] == best["sex"] and x["no"] != ""
+                   for x in people):
+                continue
+            best["age"], best["age_id"] = q["age"], q.get("age_id")
+            best["flags"].append("age_next_line")
+            people.remove(q)
+        # форма без номеров людей (1795 г.: проставлены только дворы) — «возраст без номера» здесь не ошибка
+        numbered = sum(1 for p in people if str(p.get("no", "")) != "")
+        if len(people) >= 5 and numbered < 0.2 * len(people):
+            for p in people:
+                p["flags"] = [f for f in p["flags"] if f != "age_without_number"]
+            rep["flags"].append(f"half{hf['no']}:no_person_numbers")
         # 4а. номера по соседям: ошибки распознавания, лишние числа, пропуски
         people, extra = repair_numbers(people)
         # 5. номер двора: к первому человеку двора (ближайший по y), дальше действует вниз
@@ -639,6 +773,7 @@ def process(node, a):
                 _, name, how, text = marks.pop(0)
                 rep["settlement_marks"].append({"half": hf["no"], "name": name, "how": how, "text": text})
                 p["settlement_here"] = name
+                p["settlement_how"] = how
             p["half"] = hf["no"]
             rep["persons"].append(p)
         for _, name, how, text in marks:   # заголовок НП ниже последнего человека половины
