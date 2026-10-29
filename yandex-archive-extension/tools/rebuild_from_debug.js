@@ -38,19 +38,21 @@ for (const f of fs.readdirSync(dir)) {
 
 const rowRecords = [], blockRecords = [], sheetRows = [], linkRows = [], families = [], pageMeta = {};
 for (const link of summary.links) {
-  const [year, url, rng] = link;
+  const [linkYear, url, rng] = link;
+  let year = linkYear;
   const [lo, hi] = String(rng).split(/[–-]/).map((v) => parseInt(v, 10));
   const seen = new Set();
   const pages = summary.pages
-    .filter((p) => p.year === year && url.includes(p.fileId) && p.page >= lo && p.page <= (hi || lo))
+    .filter((p) => p.year === linkYear && url.includes(p.fileId) && p.page >= lo && p.page <= (hi || lo))
     .filter((p) => (seen.has(p.page) ? false : seen.add(p.page)))
     .sort((a, b) => a.page - b.page);
-  const st = Layout.newState(), fams = [], hows = new Set(), foundAll = new Set();
+  const st = Layout.newState(), fams = [], hows = new Set(), foundAll = new Set(), kinds = [];
   for (const pg of pages) {
-    const f = nodes.get(`${year || 'год'}|${String(pg.fileId).slice(0, 8)}|${pg.page}`);
+    const f = nodes.get(`${linkYear || 'год'}|${String(pg.fileId).slice(0, 8)}|${pg.page}`);
     if (!f) { sheetRows.push({ year, page: pg.page, found: '', url: pg.url, text: 'нет файла данных страницы в пакете', check: '' }); continue; }
     const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
     const node = d.props.pageProps.currentNode;
+    if (!year && node.crumbs) year = Logic.yearFromText((node.crumbs.find((c) => c.type === 'File') || {}).name) || null;
     // путь «ЦГА Москвы / Фонд / Опись / Дело / Скан» и имя файла скана (данные страницы версии 2.0+ содержат crumbs)
     if (node.crumbs && node.crumbs.length) {
       const ci = ExcelSheets.crumbInfo(node.crumbs, pg.page, node.id, new URL(pg.url).origin);
@@ -62,6 +64,7 @@ for (const link of summary.links) {
     }
     const text = node.textBlocks.map((t) => String(t.text || '').trim()).filter(Boolean).join('\n');
     const found = new Set(Logic.findSettlements(text, mode));
+    kinds.push(Logic.pageKindByText(text));
     st.lastRep = null;
     const how = mode === 'confession'
       ? Layout.processConfessionNode(node, { url: pg.url, page: pg.page, year }, st, mode, fams)
@@ -74,6 +77,8 @@ for (const link of summary.links) {
   Layout.finish(st, fams);
   fams.forEach((f) => { f.year = year; });
   families.push(...fams);
+  const kindWarn = Logic.kindWarning(kinds, mode);
+  if (kindWarn && st.rows.length) st.rows[0].notes.push(kindWarn);
   st.rows.forEach((r) => rowRecords.push(Object.assign({ year }, r)));
   (st.blocks || []).forEach((b) => blockRecords.push(Object.assign({ year }, b)));
   const persons = mode === 'confession'
@@ -81,7 +86,7 @@ for (const link of summary.links) {
     : fams.reduce((acc, f) => acc + f.persons.length, 0);
   linkRows.push([year, url, rng, pages.length, foundAll.size, [...foundAll].sort().join('; '), link[6], fams.length, persons,
     `пересобрано версией ${version} из отладочного пакета`,
-    [st.skipped.length ? `страницы без таблицы: ${st.skipped.join(', ')}` : ''].filter(Boolean).join('; ')]);
+    [kindWarn, st.skipped.length ? `страницы без таблицы: ${st.skipped.join(', ')}` : ''].filter(Boolean).join('; ')]);
 }
 
 const sheets = ExcelSheets.build({ processMode: mode, outFormat, families, rowRecords, blockRecords, sheetRows, linkRows, pageMeta },

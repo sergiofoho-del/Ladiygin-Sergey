@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 yaarchive — общий скрипт обработки Яндекс Архива: от пакетов расширения до Excel и GEDCOM,
-с навыком «Исправление ошибок» (предложения с вашим подтверждением).
+с навыком «Исправление ошибок». С 3.2.0 работает БЕЗ ДИАЛОГОВ: надёжные исправления применяет сам,
+спорные только показывает в листе «Исправления».
 
 Загрузку делает расширение Chrome (нужен вход в Яндекс). Расширение 2.2.0+ кладёт каждую страницу в
 «<папка ссылок>/yaarchive_debug/<дата_время>/<год>_<док>_p<стр>_next_data.json», сканы — в «Archive_Scans»
@@ -21,16 +22,15 @@ yaarchive — общий скрипт обработки Яндекс Архив
  11  ГОД РОЖДЕНИЯ год документа − возраст (ревизские — по нынешнему или прошлому возрасту)
  12  СКАНЫ        имя файла по пути «ЦГА Москвы/Фонд/Опись/Дело» (как Scrpt_YA_Orig_Scan), поиск в Archive_Scans
  13  ПРОВЕРКА     замечания по людям и страницам
- 14  ИСПРАВЛЕНИЕ  навык «Исправление ошибок»: предложения + ваши ручные правки из Excel
+ 14  ИСПРАВЛЕНИЕ  навык «Исправление ошибок»: номера людей/дворов по соседям, дозагрузка, ваши правки из
+                  Excel — применяются сами (и итог пересчитывается); спорные — лист «Исправления», «проверить»
  15  ИТОГ         «Итог/»: Итог_люди.xlsx, Итог_древо.ged, Итог_люди.json, Отчёт.txt
- 16  ДИАЛОГ       подтверждение исправлений в окне (если вы рядом) или в листе «Исправления» Excel;
-                  принятые сразу применяются и итог пересчитывается
 
 Запуск:
-  python yaarchive.pyz                    двойной щелчок: следить за папкой, где лежит скрипт
-  python yaarchive.pyz --watch ПАПКА      следить за папкой
-  python yaarchive.pyz ПАПКА              обработать один раз (с диалогом исправлений) и выйти
-  python yaarchive.pyz ПАПКА --no-dialog  без диалога: предложения только в Excel
+  python yaarchive.pyz                    двойной щелчок: обработать папку, где лежит скрипт, и открыть Excel
+  python yaarchive.pyz ПАПКА              обработать один раз и выйти
+  python yaarchive.pyz --watch ПАПКА      следить за папкой (по желанию)
+  python yaarchive.pyz ПАПКА --no-auto    ничего не исправлять самому — только показать в листе «Исправления»
 """
 import argparse
 import datetime
@@ -38,18 +38,16 @@ import hashlib
 import json
 import math
 import os
-import queue
 import re
 import subprocess
 import sys
-import threading
 import time
 import traceback
 from collections import Counter, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -170,6 +168,8 @@ def load_spravochniki(roots):
     EC.ORDER_FROM_1750 = list(np_["порядок_с_1750"])
     RP.REVISIONS = {int(k): v for k, v in SPR["ревизии"].items() if k.isdigit()}
     FX.LIMITS.update({k: v for k, v in SPR.get("проверки", {}).items() if not k.startswith("_")})
+    if isinstance(SPR.get("исправления_автоматически"), list):
+        FX.AUTO_TYPES = set(SPR["исправления_автоматически"])
     import ya_out
     for k, v in SPR.get("цвета", {}).items():
         if not k.startswith("_"):
@@ -297,6 +297,8 @@ def load_package(pkg):
     info = {(str(p.get("fileId", ""))[:8], int(p.get("page") or 0)): p for p in summ.get("pages") or []}
     pages = []
     for f in sorted(pkg.glob("*_next_data.json")):
+        if not FNAME_RE.match(f.name):          # first_page_next_data.json и т. п. — копия, не страница документа
+            continue
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception as e:
@@ -359,7 +361,23 @@ def page_kind_by_text(node):
     return None
 
 
+REVISION_YEARS = {1: 1719, 2: 1745, 3: 1763, 4: 1782, 5: 1795, 6: 1811, 7: 1816, 8: 1834, 9: 1850, 10: 1858}
+
+
+def year_from_text(t):
+    """«1782» или «6 ревизия» / «по 6-й ревизии» → год (как Logic.yearFromText расширения)"""
+    m = re.search(r"(?<!\d)(1[5-9]\d\d)(?!\d)", str(t or ""))
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(?<!\d)(10|[1-9])\s*(?:-?\s*(?:я|й|ой|ая))?\s+ревизи", str(t or ""), re.I)
+    return REVISION_YEARS.get(int(m.group(1))) if m else None
+
+
 def group_documents(pages):
+    for p in pages:                    # в файле ссылок года нет — по названию дела в данных страницы
+        if not p.year:
+            f = next((c for c in (p.node or {}).get("crumbs") or [] if c.get("type") == "File"), {})
+            p.year = year_from_text(f.get("name"))
     docs = OrderedDict()
     for p in sorted(pages, key=lambda p: (p.year or 0, p.file_id, p.page if p.page is not None else -1)):
         p.kind_text = page_kind_by_text(p.node)
@@ -439,7 +457,8 @@ def scan_index(roots, extra):
 
 # =============================================================================== 5. разбор
 CONF_FLAG_RU = [
-    (r"^half(\d+):(.*)$", lambda m: f"лист {m.group(1)}: " + conf_flag(m.group(2))),
+    (r"^half(\d+):(.*)$", lambda m: (lambda t: f"ⓘ лист {m.group(1)}: {t[1:].strip()}" if t.startswith("ⓘ")
+                                      else f"лист {m.group(1)}: {t}")(conf_flag(m.group(2)))),
     (r"^seq_breaks_([MF])=(\d+)/(\d+)", lambda m: f"номера {'мужчин' if m.group(1) == 'M' else 'женщин'} не подряд "
                                                   f"в {m.group(2)} местах из {m.group(3)}"),
     (r"^age_columns_(\d)", lambda m: f"найдено столбцов возраста: {m.group(1)} из 2"),
@@ -458,6 +477,13 @@ CONF_FLAG_RU = [
     (r"^two_yard_numbers$", lambda m: "два номера двора у одной строки"),
     (r"^no_numbers$", lambda m: "столбцы номеров не найдены"),
     (r"^age_zone_wide$", lambda m: "столбцы возраста дальше обычного от списка"),
+    (r"^weak_col$", lambda m: "значение у границы столбца"),
+    (r"^sex_unknown$", lambda m: "пол не определён (возраст из общего столбца) — проверить"),
+    (r"^age_next_line$", lambda m: "ⓘ возраст записан строкой ниже номера"),
+    (r"^age_column_split$", lambda m: "ⓘ столбцы возраста мужчин и женщин слиты — разделены по положению"),
+    (r"^number_column_split$", lambda m: "ⓘ столбцы номеров мужчин и женщин слиты — разделены по положению"),
+    (r"^age_by_row$", lambda m: "ⓘ один столбец возраста — пол взят по номеру в строке"),
+    (r"^no_person_numbers$", lambda m: "ⓘ форма ведомости без нумерации людей"),
 ]
 # пояснения (что сделал алгоритм) — не ошибки: в «Примечание», не в «Проверить»
 INFO_RX = re.compile(r"^(ⓘ|отчество образовано|номер семьи взят|НП по порядку|НП определён по порядку|НП взят|повторный НП)")
@@ -836,32 +862,31 @@ def write_outputs(ctx):
     return res
 
 
-def run_once(roots, out_dir, opts, interactive, feedback=True):
+def run_once(roots, out_dir, opts, feedback=True):
+    """один пересчёт без вопросов: надёжные исправления применяются сами (до 3 кругов), спорные — в лист «Исправления»"""
     t0 = time.time()
     if feedback:
         fb = check_excel_decisions(out_dir)
         if fb:
             log(f"Из Excel: {fb}.")
-    while True:
+    for _round in range(3):
         ctx = build(roots, out_dir, opts)
         if not ctx.pages:
             log("Пакетов с данными страниц пока нет" + (f" (идёт запись: {len(ctx.waiting)})" if ctx.waiting else "") + ".")
             return ctx
-        res = write_outputs(ctx)
-        n_doc, n_p = len(ctx.docs), len(ctx.people)
-        log(f"Итог: документов {n_doc}, страниц {len(ctx.pages)}, людей {n_p}, семей в GEDCOM {res.get('fams', 0)}, "
-            f"предложений исправлений {len(ctx.proposals)} — «{out_dir}» ({time.time() - t0:.0f} с)")
-        if res.get("locked"):
-            log(f"  {XLSX} открыт в Excel — записан «{res['xlsx'].name}». Закройте Excel, чтобы обновлять основной файл.")
-        if not (interactive and ctx.proposals):
-            return ctx
-        changed, later = FX.dialog(ctx, timeout=opts.dialog_timeout)
-        if later:
-            interactive = False                  # отложено — в этом прогоне больше не спрашиваем
-        if not changed:
-            return ctx
-        log("Принятые исправления применены — пересчитываю итог…")
-        t0 = time.time()
+        n_auto = 0 if opts.no_auto else FX.auto_apply(ctx)
+        if n_auto:
+            log(f"Исправлено автоматически: {n_auto} (номера людей и дворов по соседям, дозагрузка, ваши правки) — пересчитываю…")
+            continue
+        break
+    res = write_outputs(ctx)
+    n_doc, n_p = len(ctx.docs), len(ctx.people)
+    log(f"Итог: документов {n_doc}, страниц {len(ctx.pages)}, людей {n_p}, семей в GEDCOM {res.get('fams', 0)}, "
+        f"исправлено автоматически {ctx.corr.count()}, проверить глазами {len(ctx.proposals)} — «{out_dir}» "
+        f"({time.time() - t0:.0f} с)")
+    if res.get("locked"):
+        log(f"  {XLSX} открыт в Excel — записан «{res['xlsx'].name}». Закройте Excel, чтобы обновлять основной файл.")
+    return ctx
 
 
 def check_excel_decisions(out_dir):
@@ -910,7 +935,6 @@ def watch(roots, out_dir, opts):
     except Exception:
         state = {}
     told = set()
-    interactive = sys.stdin is not None and sys.stdin.isatty() and not opts.no_dialog
     try:
         while True:
             lock.touch()
@@ -935,12 +959,9 @@ def watch(roots, out_dir, opts):
                     opts.force = False
                     if need:
                         log(f"Обрабатываю: пакетов {len(sigs)}" + (f", ждут записи {len(waiting)}" if waiting else ""))
-                    ctx = run_once(roots, out_dir, opts, interactive, feedback=False)
+                    ctx = run_once(roots, out_dir, opts, feedback=False)
                     state = {"sigs": sigs, "time": time.time(), "version": VERSION}
                     state_f.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-                    if ctx.proposals:
-                        log(f"Ждут решения {len(ctx.proposals)} исправлений: лист «Исправления» в {XLSX} "
-                            f"(«да»/«нет» в столбце «Применить?», затем сохраните файл).")
             except Exception as e:
                 log(f"ОШИБКА: {e}\n{traceback.format_exc()}")
             time.sleep(opts.interval)
@@ -960,8 +981,9 @@ def main(argv=None):
     ap.add_argument("--scans", action="append", default=[], help="дополнительная папка со сканами (можно несколько)")
     ap.add_argument("--settle", type=int, default=20, help="пакет готов, если файлы не менялись N секунд (20)")
     ap.add_argument("--interval", type=int, default=15, help="проверять папку каждые N секунд (15)")
-    ap.add_argument("--no-dialog", action="store_true", help="не спрашивать в окне — только лист «Исправления»")
-    ap.add_argument("--dialog-timeout", type=int, default=600, help="сколько ждать ответа в окне, с (600)")
+    ap.add_argument("--no-auto", action="store_true", help="не применять исправления сами — только показать в листе «Исправления»")
+    ap.add_argument("--no-dialog", action="store_true", help=argparse.SUPPRESS)      # совместимость с 3.1: диалогов больше нет
+    ap.add_argument("--dialog-timeout", type=int, default=0, help=argparse.SUPPRESS)
     ap.add_argument("--force", action="store_true", help="пересчитать, даже если пакеты не изменились")
     ap.add_argument("--version", action="version", version=VERSION)
     opts = ap.parse_args(argv)
@@ -973,15 +995,24 @@ def main(argv=None):
     log(f"yaarchive {VERSION}. Справочники: {load_spravochniki(roots)}")
     if not ensure_openpyxl():
         return 2
-    if opts.watch or double_click:
-        code = watch(roots, out_dir, opts)
-    else:
-        interactive = sys.stdin is not None and sys.stdin.isatty() and not opts.no_dialog
-        ctx = run_once(roots, out_dir, opts, interactive)
-        code = 0 if ctx.pages else 1
-    if double_click and sys.stdin is not None and sys.stdin.isatty():
-        input("Нажмите Enter, чтобы закрыть окно…")
-    return code
+    if opts.watch:
+        return watch(roots, out_dir, opts)
+    ctx = run_once(roots, out_dir, opts)
+    if double_click and ctx.pages:
+        show_result(out_dir)
+    return 0 if ctx.pages else 1
+
+
+def show_result(out_dir):
+    """двойной щелчок: открыть готовый Excel (macOS / Windows), без вопросов"""
+    x = out_dir / XLSX
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(x if x.exists() else out_dir)])
+        elif os.name == "nt":
+            os.startfile(str(x if x.exists() else out_dir))       # noqa
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

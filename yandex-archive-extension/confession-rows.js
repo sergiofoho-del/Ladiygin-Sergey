@@ -26,19 +26,35 @@
     'деревня Рублева': 'рублев',
     'деревня Луки': `лук(?:и|ъ)?(?!${W_})`,
     'деревня Мякинина': '(?:м[яе]кинин|мемин)',
+    'деревня Екатериненская': `екатерин${W_}*ск`,
   };
   const SETTLE_PREFIX = `(?:${B_}сел${W_}*\\.?|${B_}дер${W_}*\\.?|${B_}дрв${W_}*|${B_}д\\.|${B_}с\\.)\\s*[\\[(«"]?\\s*`;
   const SETTLE_RX = Object.fromEntries(Object.entries(SETTLEMENTS).map(([k, v]) => [k, new RegExp(SETTLE_PREFIX + v, 'u')]));
   const SAME_VILLAGE = new RegExp(`${B_}того\\s+сел`, 'u');
   const OTHER_RX = new RegExp(`(?:${B_}сел${W_}*|${B_}дер${W_}*|${B_}дрв${W_}*|${B_}дрвн${W_}*)\\.?\\s+([а-я]{4,})`, 'u');
   const SETTLE_STEMS = { 'село Троицкое': 'троицк', 'деревня Острогина': 'острогин', 'деревня Черепкова': 'черепков',
-    'деревня Рублева': 'рублев', 'деревня Мякинина': 'мякинин' };
+    'деревня Рублева': 'рублев', 'деревня Мякинина': 'мякинин',
+    'деревня Екатериненская': 'екатерин' };
   const ORDER_BEFORE_1750 = ['село Троицкое', 'деревня Черепкова', 'деревня Острогина', 'деревня Рублева', 'деревня Луки', 'деревня Мякинина'];
   const ORDER_FROM_1750 = ['село Троицкое', 'деревня Острогина', 'деревня Черепкова', 'деревня Рублева', 'деревня Луки'];
 
   const norm = (t) => String(t || '').toLowerCase().replace(/[ѣіiѳѵёѡꙋѯ]/g, (c) => MAP[c])
     .replace(/[ъь]/g, '').replace(/[^\p{L}\p{N}_\s/]/gu, ' ').replace(/\s+/g, ' ').trim();
   const letters = (s) => (String(s).match(/\p{L}/gu) || []).length;
+  // заголовок НП начинается с «Деревни/Села/д./с.» и может быть длинным («Деревни Мякининой Генералъ-Лейтенанта…»)
+  const HEAD_START = /^[^\p{L}]*(?:дер\p{L}*|дрв\p{L}*|сел\p{L}*|д\.|с\.|того\s+сел)/u;
+  // итоговые и служебные фразы ведомости («Сверхъ вышеписаннаго… утаенныхъ дворовъ…», «…руку приложилъ») — не список семьи
+  const BOILER_RX = /(вышеписан|исповедал|причасти|показан[ыо]|приложил|по указу|сказк|утаен|прописн|обретает|всего при|подлинно|руку|мужеска пола|женска пола)/;
+  function boilerplate(text) {
+    if (!BOILER_RX.test(norm(text))) return false;
+    return String(text).split(/\s+/).filter((t) => t && nameSex(t, [], [])).length <= 1;
+  }
+  function settlementHeader(text, nLetters) {
+    const n = norm(text);
+    const [name, how] = settlementOf(text);
+    if (name && (nLetters < 45 || (HEAD_START.test(n) && nLetters < 140))) return [name, how];
+    return [null, null];
+  }
 
   function lev(a, b) {
     let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -126,6 +142,60 @@
       center: median(g.map((t) => t[0])) })).sort((p, q) => p.center - q.center);
   }
 
+  // один столбец возраста при двух столбцах номеров: «лѣта мужеска / женска» слиплись — делим по x' (2-средних)
+  // сколько раз номера сверху вниз идут не подряд (0 < шаг <= 3)
+  function increasingBreaks(blocks) {
+    const vals = blocks.slice().sort((p, q) => p.cy - q.cy).flatMap((b) => b.vals).filter((v) => /^\d+$/.test(String(v))).map(Number);
+    let br = 0; for (let i = 1; i < vals.length; i++) { const d = vals[i] - vals[i - 1]; if (!(d > 0 && d <= 3)) br++; }
+    return [br, vals.length];
+  }
+  // номера мужчин и женщин в двух узких столбцах вплотную слиплись: делим по x и проверяем, что в каждой части
+  // номера идут подряд, а вместе — нет
+  function splitNumberColumn(col, slope, ymid, medW) {
+    const sp = splitAgeColumn(col, slope, ymid, medW, 0.15);
+    if (!sp) return null;
+    const [b1, n1] = increasingBreaks(sp[0].blocks), [b2, n2] = increasingBreaks(sp[1].blocks), [ba, na] = increasingBreaks(col.blocks);
+    return n1 >= 3 && n2 >= 3 && b1 <= 0.25 * n1 && b2 <= 0.25 * n2 && ba > 0.3 * na ? sp : null;
+  }
+  function splitAgeColumn(col, slope, ymid, medW, minSep = 0.8) {
+    const xs = col.blocks.map((b) => [b.cx - slope * (b.cy - ymid), b]);
+    if (xs.length < 6) return null;
+    let lo = Math.min(...xs.map((t) => t[0])), hi = Math.max(...xs.map((t) => t[0]));
+    const mean = (v) => v.reduce((p, q) => p + q, 0) / v.length;
+    for (let it = 0; it < 25; it++) {
+      const a = xs.filter((t) => Math.abs(t[0] - lo) <= Math.abs(t[0] - hi)).map((t) => t[0]);
+      const b = xs.filter((t) => Math.abs(t[0] - lo) > Math.abs(t[0] - hi)).map((t) => t[0]);
+      if (!a.length || !b.length) return null;
+      const nlo = mean(a), nhi = mean(b);
+      if (nlo === lo && nhi === hi) break;
+      lo = nlo; hi = nhi;
+    }
+    let left = xs.filter((t) => Math.abs(t[0] - lo) <= Math.abs(t[0] - hi)).map((t) => t[1]);
+    let right = xs.filter((t) => Math.abs(t[0] - lo) > Math.abs(t[0] - hi)).map((t) => t[1]);
+    // уточнение: у каждого столбца свой наклон — прямая x = a + k·y по группе, число к ближайшей прямой
+    const fit = (bl) => {
+      const my = mean(bl.map((b) => b.cy)), mx = mean(bl.map((b) => b.cx));
+      const syy = bl.reduce((p, b) => p + (b.cy - my) ** 2, 0);
+      const k = syy ? bl.reduce((p, b) => p + (b.cy - my) * (b.cx - mx), 0) / syy : 0;
+      return [mx - k * my, k];
+    };
+    for (let it = 0; it < 10 && left.length >= 3 && right.length >= 3; it++) {
+      const [a1, k1] = fit(left), [a2, k2] = fit(right);
+      const near1 = (b) => Math.abs(b.cx - (a1 + k1 * b.cy)) <= Math.abs(b.cx - (a2 + k2 * b.cy));
+      const nl = col.blocks.filter(near1), nr = col.blocks.filter((b) => !near1(b));
+      const same = nl.length === left.length && nl.every((b) => left.includes(b));
+      left = nl; right = nr;
+      if (same) break;
+    }
+    if (left.length >= 3 && right.length >= 3) {
+      const [a1, k1] = fit(left), [a2, k2] = fit(right);
+      lo = a1 + k1 * ymid; hi = a2 + k2 * ymid;
+    }
+    if (hi - lo < minSep * medW || Math.min(left.length, right.length) < 0.2 * xs.length) return null;
+    const mk = (bl, c) => ({ blocks: bl.sort((p, q) => p.cy - q.cy), b: slope, center: c });
+    return [mk(left, lo), mk(right, hi)];
+  }
+
   function stableByY(blocks, eps) {
     const bs = blocks.slice().sort((p, q) => p.cy - q.cy);
     const out = []; let grp = [];
@@ -204,6 +274,13 @@
     let i = 0; while (i < a.length && a[i] === b[i]) i++;
     return a.slice(i) === b.slice(i + 1);
   }
+  // ключ для старых и народных написаний: о→а, е→и, без ь, й→и, без удвоений («огрофена» = «аграфена», «серьгеи» = «сергей»)
+  const loose = (k) => k.replace(/ь/g, '').replace(/о/g, 'а').replace(/е/g, 'и').replace(/й/g, 'и').replace(/(.)\1+/g, '$1');
+  const LOOSE = new Map();
+  for (const [sx, list] of [['M', NamesRu.M], ['F', NamesRu.F]]) for (const n of list) {
+    const k = loose(n); if (!LOOSE.has(k)) LOOSE.set(k, new Set()); LOOSE.get(k).add(sx);
+  }
+  const looseSex = (k) => { const h = LOOSE.get(loose(k)); return h && h.size === 1 ? [...h][0] : null; };
   const genForm = (k) => ((/[ая]$/.test(k) && (NM.has(k.slice(0, -1)) || NM.has(k.slice(0, -1) + 'й') || NM.has(k.slice(0, -2) + 'ий')))
     || (/[ыи]$/.test(k) && (NMF.has(k.slice(0, -1) + 'а') || NMF.has(k.slice(0, -1) + 'я'))));
   function nameSex(tok, nxt, prv) {
@@ -217,6 +294,13 @@
     if (NM.has(k)) return ['M', ref];
     if (NF.has(k)) return ['F', ref];
     if (g || /(ов|ев|ин|ова|ева|ина|ича|вна|овы|евы)$/.test(k)) return null;
+    // «депетр», «дефеодор»: сокращение «де(ти)», приклеенное распознаванием к имени
+    if (k.startsWith('де') && k.length >= 6 && !NMF.has(k)) {
+      const r = k.slice(2);
+      const sx = NM.has(r) ? 'M' : NF.has(r) ? 'F' : looseSex(r);
+      if (sx) return [sx, false];
+    }
+    if (k.length >= 4) { const sx = looseSex(k); if (sx) return [sx, false]; }
     if (k.length >= 5) {
       const hits = new Set();
       for (const [sx, set] of [['M', NamesRu.M], ['F', NamesRu.F]]) {
@@ -416,12 +500,17 @@
     const settle = [], cand = [];
     for (const b of body) {
       if (b.kind !== 'text') continue;
-      const [name, how] = settlementOf(b.text);
-      if (name && letters(b.text) < 45) { settle.push([b, name, how]); continue; }
-      if (b.w >= a.mainMinW * W && letters(b.text) >= 10) cand.push(b);
+      const [name, how] = settlementHeader(b.text, letters(b.text));
+      if (name) {
+        settle.push([b, name, how]);
+        // распознавание склеило заголовок с первой семьёй — блок и заголовок НП, и текст людей
+        if (letters(b.text) < 45) continue;
+      }
+      if (b.w >= a.mainMinW * W && letters(b.text) >= 10 && !boilerplate(b.text)) cand.push(b);
     }
     for (const b of heads.concat(blks.filter((x) => x.cy <= hdrBottom && x.kind === 'text'))) {
-      const [name, how] = settlementOf(b.text);
+      const [name, how] = settlementHeader(b.text, 0);
+      // заголовок всей ведомости («Вѣдомость духовная… въ селѣ Троицкомъ») тоже задаёт НП: после него — духовенство села
       if (name && settle.every((s) => s[0] !== b)) settle.push([b, name, how]);
     }
     let groups = [];
@@ -474,10 +563,14 @@
         if (rcols2.length >= 2) { rcols = rcols2; rep.flags.push(`half${hf.no}:age_zone_wide`); }
       }
       const roles = {};
-      const pick = lcols.slice(-3);
+      let pick = lcols.slice(-3);
       let names = ['yard', 'm_no', 'f_no'].slice(3 - pick.length);
       if (pick.length === 2) {
-        if (pick[0].blocks.length < 0.45 * pick[1].blocks.length) { names = ['yard', 'm_no']; rep.flags.push(`half${hf.no}:left_columns_2_sex_unknown`); }
+        if (pick[0].blocks.length < 0.45 * pick[1].blocks.length) {
+          const sp = splitNumberColumn(pick[1], slope, ymid, medW);
+          if (sp) { pick = [pick[0], sp[0], sp[1]]; names = ['yard', 'm_no', 'f_no']; rep.flags.push(`half${hf.no}:number_column_split`); }
+          else { names = ['yard', 'm_no']; rep.flags.push(`half${hf.no}:left_columns_2_sex_unknown`); }
+        }
         else { names = ['m_no', 'f_no']; rep.flags.push(`half${hf.no}:yard_column_not_found`); }
       }
       pick.forEach((c, i) => { roles[names[i]] = c; });
@@ -485,7 +578,11 @@
       const rpick = rcols.slice(0, 2);
       rpick.forEach((c, i) => { roles[['age_m', 'age_f'][i]] = c; });
       for (const c of rcols.slice(2)) rep.skipped.show_columns += c.blocks.length;
-      if (rpick.length < 2) rep.flags.push(`half${hf.no}:age_columns_${rpick.length}`);
+      if (rpick.length === 1 && roles.m_no && roles.f_no) {
+        const sp = splitAgeColumn(rpick[0], slope, ymid, medW);
+        if (sp) { [roles.age_m, roles.age_f] = sp; rep.flags.push(`half${hf.no}:age_column_split`); }
+        else { roles.age_any = roles.age_m; delete roles.age_m; rep.flags.push(`half${hf.no}:age_by_row`); }
+      } else if (rpick.length < 2) rep.flags.push(`half${hf.no}:age_columns_${rpick.length}`);
       hf.columns = {};
       for (const [nm, c] of Object.entries(roles)) {
         hf.columns[nm] = { center_x: Math.round(c.center), center_x_rel: Math.round(c.center / W * 1e4) / 1e4, slope: Math.round(c.b * 1e4) / 1e4, cells: c.blocks.length };
@@ -502,9 +599,9 @@
           });
         }
       }
-      for (const [sex, role] of [['M', 'age_m'], ['F', 'age_f']]) {
+      for (const [sex, role] of [['M', 'age_m'], ['F', 'age_f'], [null, 'age_any']]) {
         const ages = stableByY(colBlocks(role), 0.15 * medH);
-        const cands = people.filter((p) => p.sex === sex).sort((p, q) => p.cy - q.cy);
+        const cands = people.filter((p) => sex === null || p.sex === sex).sort((p, q) => p.cy - q.cy);
         const pairs = [];
         ages.forEach((ag, i) => cands.forEach((p, j) => pairs.push([Math.abs(ag.cy - p.cy), i, j])));
         pairs.sort((p, q) => p[0] - q[0]);
@@ -523,10 +620,31 @@
           cands[j].age_id = ages[i].id;
         }
         ages.forEach((ag, i) => {
-          if (!used.has(i)) people.push({ sex, no: '', age: ag.vals.length ? ag.vals[0] : ag.text, cy: ag.cy - sh(ag.cy), age_id: ag.id, flags: ['age_without_number'] });
+          if (!used.has(i)) people.push({ sex: sex || 'M', no: '', age: ag.vals.length ? ag.vals[0] : ag.text, cy: ag.cy - sh(ag.cy), age_id: ag.id,
+            flags: ['age_without_number'].concat(sex ? [] : ['sex_unknown']) });
         });
       }
       people.sort((p, q) => p.cy - q.cy);
+      // возраст на последней строке многострочной записи: возраст без номера — ближайшему выше человеку того же пола
+      // с номером, но без возраста (до 2,5 строк, без чужих между)
+      for (const q of people.filter((x) => x.flags.includes('age_without_number'))) {
+        const up = people.filter((x) => x !== q && x.no !== '' && x.age === '' && x.cy < q.cy && q.cy - x.cy <= 2.5 * medH
+          && (q.flags.includes('sex_unknown') || x.sex === q.sex));
+        if (!up.length) continue;
+        const best = up.reduce((a, b) => (b.cy > a.cy ? b : a));
+        if (people.some((x) => x !== q && x !== best && best.cy < x.cy && x.cy < q.cy && x.sex === best.sex && x.no !== '')) continue;
+        best.age = q.age; best.age_id = q.age_id;
+        best.flags.push('age_next_line');
+        people.splice(people.indexOf(q), 1);
+      }
+      // форма без номеров людей (1795 г.: только дворы) — «возраст без номера» здесь не ошибка
+      {
+        const numbered = people.filter((p) => String(p.no) !== '').length;
+        if (people.length >= 5 && numbered < 0.2 * people.length) {
+          people.forEach((p) => { p.flags = p.flags.filter((f) => f !== 'age_without_number'); });
+          rep.flags.push(`half${hf.no}:no_person_numbers`);
+        }
+      }
       // 4а. номера по соседям: ошибки распознавания, лишние числа, пропуски
       let extra;
       [people, extra] = repairNumbers(people);
@@ -599,6 +717,7 @@
           const [, name, how, text] = marks.shift();
           rep.settlement_marks.push({ half: hf.no, name, how, text });
           p.settlement_here = name;
+          p.settlement_how = how;
         }
         p.half = hf.no;
         rep.persons.push(p);

@@ -1,8 +1,11 @@
 """
 yaarchive: навык «Исправление ошибок».
 
-После обработки и вывода результатов анализирует ошибки и противоречия и предлагает конкретные действия.
-Ничего не меняет без вашего подтверждения: в окне скрипта (д/н) или в листе «Исправления» Excel («да»/«нет»).
+После обработки анализирует ошибки и противоречия. Начиная с 3.2.0 — БЕЗ ДИАЛОГОВ:
+  • надёжные исправления (номер человека и номер двора по соседям, файл дозагрузки страниц, ваши правки в листе
+    «Люди») применяются сами и помечаются в Excel («исправлено автоматически»);
+  • спорные (имя и пол, сдвиг возрастов, родство, возраст) только показываются в листе «Исправления» со статусом
+    «проверить»; хотите — впишите «да»/«нет», не хотите — ничего делать не нужно.
 Принятые исправления хранятся в «Итог/исправления.json» и применяются при КАЖДОМ пересчёте (новые пакеты,
 новая версия алгоритма) — на своём шаге конвейера: значения (НП, двор, пол, номер, возраст, текст) — до родства
 и года рождения, родство и год рождения — после.
@@ -23,16 +26,16 @@ yaarchive: навык «Исправление ошибок».
 import datetime
 import hashlib
 import json
-import queue
 import re
 import sys
-import threading
 import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
 LIMITS = {"разница_возраста_родитель_ребёнок": 14, "макс_возраст": 110, "допуск_возраста_между_ревизиями": 2}
 FILE = "исправления.json"
+# виды исправлений, которые применяются без вопроса (можно изменить в справочниках: «исправления_автоматически»)
+AUTO_TYPES = {"Номер человека", "Номер двора", "Дозагрузка страниц", "Ваша правка в Excel"}
 MANUAL = ".ручные_правки.json"
 SNAP, PROPS = ".снимок.json", ".предложения.json"
 STAGE1 = {"settlement", "yard", "sex", "no", "age", "age_prev", "raw"}
@@ -524,8 +527,8 @@ def read_excel_feedback(od):
                                 f"вы изменили «{FIELD_RU.get(f, f)}» в листе «Люди»; подтвердите, чтобы правка сохранялась при пересчётах",
                                 old or "пусто", v or "пусто")
                         pr["where"] = who_
-                        if not corr.decided(pr["id"]) and pr["id"] not in man:
-                            man[pr["id"]] = pr
+                        if not corr.decided(pr["id"]):
+                            corr.decide(pr, "да", "ваша правка в Excel")      # ваша правка — уже ваше решение
                             n_man += 1
             (od / MANUAL).write_text(json.dumps(man, ensure_ascii=False), encoding="utf-8")
     snap["read"] = mt
@@ -533,69 +536,16 @@ def read_excel_feedback(od):
     if not (n_dec or n_undo or n_man):
         return None
     return ", ".join(x for x in (f"решений {n_dec}" if n_dec else "", f"отмен {n_undo}" if n_undo else "",
-                                 f"ваших правок {n_man} (ждут подтверждения)" if n_man else "") if x)
+                                 f"ваших правок {n_man} (сохранены)" if n_man else "") if x)
 
 
-# =============================================================================== диалог в окне
-_q, _thr = queue.Queue(), None
-
-
-def _reader():
-    for line in sys.stdin:
-        _q.put(line.strip())
-    _q.put(None)
-
-
-def ask(prompt, timeout):
-    global _thr
-    if _thr is None:
-        _thr = threading.Thread(target=_reader, daemon=True)
-        _thr.start()
-    print(prompt, end="", flush=True)
-    try:
-        return _q.get(timeout=timeout)
-    except queue.Empty:
-        return None
-
-
-def dialog(ctx, timeout=600):
-    """-> (что-то применено, отложено «позже»/нет ответа)"""
-    props = ctx.proposals
-    print("\n" + "=" * 78)
-    print(f"Навык «Исправление ошибок»: предложений {len(props)}.")
-    print("Ответы: д — применить, н — не применять, дв — да всем такого вида, нв — нет всем такого вида,")
-    print("        п — решу позже (останутся в листе «Исправления» Excel), ? — подробнее")
-    print("=" * 78)
-    auto, changed = {}, False
-    for i, pr in enumerate(props, 1):
-        ans = auto.get(pr["type"])
-        if ans is None:
-            print(f"\n[{i}/{len(props)}] {pr['type']} — {pr['where']}")
-            print(f"    сейчас: {pr['now']}\n    предлагается: {pr['new']}\n    почему: {pr['reason']}")
-            while True:
-                a = ask("    Применить? [д/н/дв/нв/п/?] ", timeout)
-                if a is None:
-                    print("\n    Нет ответа — остальные предложения ждут в листе «Исправления».")
-                    return changed, True
-                a = a.lower().strip()
-                if a == "?":
-                    for c in pr.get("changes", []):
-                        print(f"      {c[0]}: {FIELD_RU.get(c[1], c[1])} {c[2]!s} → {c[3]!s}")
-                    if pr.get("url"):
-                        print(f"      страница: {pr['url']}")
-                    continue
-                if a in ("д", "н", "дв", "нв", "п", "y", "n"):
-                    break
-            if a == "п":
-                print("    Хорошо — остальные в листе «Исправления».")
-                return changed, True
-            if a in ("дв", "нв"):
-                auto[pr["type"]] = "д" if a == "дв" else "н"
-            ans = {"y": "д", "n": "н", "дв": "д", "нв": "н"}.get(a, a)
-        ctx.corr.decide(pr, "да" if ans == "д" else "нет", "окно", roots=ctx.roots)
-        changed = changed or ans == "д"
-        man = load_manual(ctx.out_dir)
-        if pr["id"] in man:
-            del man[pr["id"]]
-            (Path(ctx.out_dir) / MANUAL).write_text(json.dumps(man, ensure_ascii=False), encoding="utf-8")
-    return changed, False
+# =============================================================================== автоматическое применение
+def auto_apply(ctx, types=None):
+    """надёжные исправления — без вопроса; -> сколько применено"""
+    types = AUTO_TYPES if types is None else types
+    n = 0
+    for pr in ctx.proposals:
+        if pr["type"] in types and not ctx.corr.decided(pr["id"]):
+            ctx.corr.decide(pr, "да", "автоматически", roots=ctx.roots)
+            n += 1
+    return n
