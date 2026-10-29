@@ -622,6 +622,10 @@
     });
     return writeChain;
   }
+  // обязательные данные для общего скрипта yaarchive — независимо от галочки отладки
+  function saveData(name, obj) {
+    saveOut(name, new Blob([JSON.stringify(obj)], { type: 'application/json' }));
+  }
   function saveDebug(name, obj) {
     if (!$('debugAll').checked) return;
     saveOut(name, new Blob([typeof obj === 'string' ? obj : JSON.stringify(obj, null, 1)], { type: 'application/json' }));
@@ -756,14 +760,21 @@
             url: r.url, text: r.err ? `ОШИБКА: ${r.err}` : r.text, check: '',
           };
           sheetRows.push(sr);
-          if (r.err) continue;
+          if (r.err) {      // страница не загрузилась — общий скрипт предложит дозагрузку
+            debugIndex.push({ year: it.year, fileId: it.fileId, page: n, url: r.url, how: 'ошибка загрузки', error: r.err, flags: [], halves: [], check: '' });
+            continue;
+          }
           let how = null;
-          if (r.nextNode && m.id === 'revision') how = Layout.processNode(r.nextNode, { url: r.url, page: n }, state, m.id, fams);
+          const tag8 = String(it.fileId).slice(0, 8);
+          // данные страницы — вход общего скрипта yaarchive: сохраняются всегда, в обоих режимах
+          if (r.nextNode) saveData(`${it.year || 'год'}_${tag8}_p${n}_next_data.json`, { props: { pageProps: { url: r.url, docNumber: n, year: it.year, fileId: it.fileId, mode: m.id, currentNode: r.nextNode } } });
+          if (r.nextNode && m.id === 'revision') {
+            how = Layout.processNode(r.nextNode, { url: r.url, page: n }, state, m.id, fams);
+            debugIndex.push({ year: it.year, fileId: it.fileId, page: n, url: r.url, how, flags: [], halves: [], check: state.checks[n] || '' });
+          }
           if (r.nextNode && m.id === 'confession') {
             state.lastRep = null;
             how = Layout.processConfessionNode(r.nextNode, { url: r.url, page: n, year: it.year }, state, m.id, fams);
-            const tag8 = String(it.fileId).slice(0, 8);
-            saveDebug(`${it.year || 'год'}_${tag8}_p${n}_next_data.json`, { props: { pageProps: { url: r.url, docNumber: n, currentNode: r.nextNode } } });
             if (state.lastRep) {
               for (const mk of state.lastRep.settlement_marks) if (!String(mk.name).startsWith('other:')) { perPage.get(n).add(mk.name); foundAll.add(mk.name); }
               sr.found = [...perPage.get(n)].sort().join('; ');
@@ -808,8 +819,11 @@
             `не удалось ${scanStats.failed}. Папка: ${outDir ? `«${outDir.name}/${SCAN_DIR}/»` : linksDir ? `«${linksDir.name}/${SCAN_DIR}/»` : `«Загрузки/${SCAN_DIR}/»`}.`);
       }
       try { await saveResult(true); } catch (e) { log('Не удалось сохранить: ' + e.message); }
-      if ($('debugAll').checked && debugIndex.length) {
-        saveDebug('run_summary.json', { version: chrome.runtime.getManifest().version, mode: settings.mode, pages: debugIndex, links: linkRows });
+      if (debugIndex.length) {
+        // run_summary.json пишется последним — признак «пакет готов» для общего скрипта (yaarchive --watch)
+        saveData('run_summary.json', { version: chrome.runtime.getManifest().version, mode: settings.mode, complete: !stopRequested,
+          finished: new Date().toISOString(), outDir: outDir ? outDir.name : '', linksDir: linksDir ? linksDir.name : '',
+          scansDir: settings.saveScans ? SCAN_DIR : '', pages: debugIndex, links: linkRows });
         log(`Отладочный пакет: ${outLabel()} (страниц: ${debugIndex.length}). Пришлите эту папку на анализ.`);
       }
       if (workTabId !== null) { chrome.tabs.remove(workTabId).catch(() => {}); workTabId = null; }
