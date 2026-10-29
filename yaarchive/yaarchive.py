@@ -49,7 +49,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -115,6 +115,8 @@ def ensure_openpyxl():
     except ImportError:
         pass
     log("Нужна библиотека openpyxl — устанавливаю (один раз)…")
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True).returncode != 0:
+        subprocess.run([sys.executable, "-m", "ensurepip", "--user"], capture_output=True)   # Python без pip
     for extra in ([], ["--break-system-packages"]):
         r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "openpyxl"] + extra)
         if r.returncode == 0:
@@ -130,7 +132,7 @@ def ensure_openpyxl():
         import openpyxl  # noqa: F401,F811
         return True
     except ImportError:
-        log("Не удалось установить openpyxl. Выполните в командной строке:  python -m pip install openpyxl")
+        log(f"Не удалось установить openpyxl (нет интернета?). Выполните в Терминале:  {sys.executable} -m pip install --user openpyxl")
         return False
 
 
