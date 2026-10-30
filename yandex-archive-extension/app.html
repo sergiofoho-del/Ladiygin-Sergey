@@ -11,6 +11,9 @@
     .muted { color: #777; font-size: 13px; }
     fieldset { border: 1px solid #8884; border-radius: 8px; margin: 16px 0; padding: 12px 16px; }
     legend { padding: 0 6px; font-weight: 600; }
+    body { counter-reset: sec; }
+    fieldset:not([hidden]) > legend::before { counter-increment: sec; content: counter(sec) ". "; }
+    [hidden] { display: none !important; }
     label { display: block; margin: 6px 0; }
     label.mode { padding: 8px 10px; border: 1px solid #8884; border-radius: 8px; }
     label.mode input { margin-right: 8px; }
@@ -42,30 +45,32 @@
   <div class="muted">Перед запуском войдите в Яндекс в этом же Chrome (откройте ya.ru/archive). Эту вкладку не закрывайте, пока идёт работа.</div>
 
   <fieldset>
-    <legend>1. Тип обработки данных</legend>
+    <legend>Тип обработки данных</legend>
     <label class="mode"><input type="radio" name="mode" value="confession" checked>
       <b>Исповедные ведомости</b><span class="muted" id="descConfession"></span></label>
     <label class="mode"><input type="radio" name="mode" value="revision">
       <b>Ревизские сказки</b><span class="muted" id="descRevision"></span></label>
+    <label class="mode"><input type="radio" name="mode" value="images">
+      <b>Скачать графические образы страниц из списка ссылок</b><span class="muted" id="descImages"></span></label>
   </fieldset>
 
   <fieldset>
-    <legend>2. Список ссылок</legend>
+    <legend>Откуда взять ссылки</legend>
     <div class="row">
-      <button id="pickDirBtn" class="primary">Выбрать папку, где лежит файл ссылок</button>
+      <button id="pickDirBtn" class="primary">Выбрать папку с файлом ссылок (.html или .ged)</button>
       <select id="linksSel" hidden></select>
     </div>
     <div class="muted" id="dirInfo">Папка не выбрана</div>
-    <div class="muted">Результат (Excel), журнал работы и отладочные файлы по каждой странице сохраняются автоматически
-      в эту же папку: «yaarchive_debug/&lt;время запуска&gt;/». Папка запоминается до следующего раза.</div>
-    <details style="margin-top:6px"><summary class="muted">или выбрать только файл (тогда сохранение в «Загрузки/yaarchive_debug/…»)</summary>
-      <input type="file" id="linksFile" accept=".html,.htm,text/html">
-    </details>
-    <div class="muted" id="linksInfo">Файл list_links.html не выбран</div>
+    <div class="muted" id="linksInfo">Файл ссылок не выбран</div>
+    <div class="muted" data-only="confession revision">Файл .html — список ссылок на документы. Результат (Excel), журнал и отладочные файлы
+      сохраняются в эту же папку: «yaarchive_debug/&lt;время запуска&gt;/». Папка запоминается до следующего раза.</div>
+    <div class="muted" data-only="images">Файл .ged (генеалогический проект) или .html (список ссылок): тип определяется по файлу.
+      Результат — <code>result_links.xlsx</code>, <code>list_links_fixed.html</code>, журнал и папка <code>Archive_Scans</code> со сканами —
+      сохраняется в эту же папку (или в другую, если отметить «Выбрать куда сохранить» в настройках).</div>
   </fieldset>
 
-  <fieldset>
-    <legend>3. Откуда брать данные на странице</legend>
+  <fieldset data-only="confession revision">
+    <legend>Откуда брать данные на странице</legend>
     <div class="muted">
       Текст берётся только из окна расшифрованного (распознанного) текста — справа от окна со сканом.
       Дата документа — строка выше панели инструментов окна со сканом. По умолчанию окна определяются автоматически;
@@ -83,8 +88,8 @@
     </div>
   </fieldset>
 
-  <fieldset>
-    <legend>4. Результат в Excel</legend>
+  <fieldset data-only="confession revision">
+    <legend>Результат в Excel</legend>
     <div>В каком виде выдать результаты (не зависит от типа обработки в разделе 1):</div>
     <label class="toggle" title="Переключить вид файла результатов">
       <input type="checkbox" id="outFormat" role="switch" aria-label="Вид результата: исповедные ведомости или ревизские сказки">
@@ -103,13 +108,14 @@
   </fieldset>
 
   <fieldset>
-    <legend>5. Настройки</legend>
+    <legend>Настройки</legend>
     <label><input type="checkbox" id="showTab"> Показывать рабочую вкладку (если страницы не успевают прогружаться в фоне)</label>
-    <label><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html, first_page_debug.json, first_page_next_data.json)</label>
-    <label><input type="checkbox" id="debugAll" checked> Сохранять дополнительные отладочные файлы (результат привязки столбцов по каждой странице). Данные страниц и run_summary.json для общего скрипта yaarchive сохраняются всегда.</label>
-    <label><input type="checkbox" id="outPick"> <b>Выбрать куда сохранить</b> файл результатов result.xlsx <span class="muted" id="outPickInfo"></span></label>
-    <div class="muted">Без флажка result.xlsx сохраняется в папку запуска «yaarchive_debug/&lt;дата_время&gt;_v&lt;версия&gt;/» рядом с файлом ссылок.
+    <label data-only="confession revision"><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html, first_page_debug.json, first_page_next_data.json)</label>
+    <label data-only="confession revision"><input type="checkbox" id="debugAll" checked> Сохранять дополнительные отладочные файлы (результат привязки столбцов по каждой странице). Данные страниц и run_summary.json для общего скрипта yaarchive сохраняются всегда.</label>
+    <label><input type="checkbox" id="outPick"> <b>Выбрать куда сохранить</b> результат <span id="outName">result.xlsx</span> <span class="muted" id="outPickInfo"></span></label>
+    <div class="muted" data-only="confession revision">Без флажка result.xlsx сохраняется в папку запуска «yaarchive_debug/&lt;дата_время&gt;_v&lt;версия&gt;/» рядом с файлом ссылок.
       Папки запоминаются; при следующем запуске Chrome один раз попросит подтвердить доступ.</div>
+    <div class="muted" data-only="images">Без флажка всё сохраняется в папку, где лежит файл ссылок. Папки запоминаются; при следующем запуске Chrome один раз попросит подтвердить доступ.</div>
   </fieldset>
 
   <div class="row">
@@ -117,32 +123,6 @@
     <button id="saveBtn" disabled>Сохранить сейчас</button>
     <button id="stopBtn" disabled>Остановить и сохранить</button>
   </div>
-
-  <fieldset>
-    <legend>6. Скачать графические образы страниц из списка ссылок</legend>
-    <div class="muted">Отдельный режим: данные людей не разбираются, только сохраняются сканы страниц (навык «Сохранить Скан», Scrpt_YA_Orig_Scan)
-      и составляется Excel. Ссылки приводятся к виду «ya.ru/archive/catalog/&lt;дело&gt;/&lt;страница&gt;» (параметры «?center=», «zoom» и т. п. отбрасываются),
-      дубликаты удаляются; ссылка-диапазон (поиск «sheet_page_from…to») раскрывается в отдельные страницы. Перед запуском войдите в Яндекс в этом же Chrome.</div>
-
-    <div style="margin-top:10px"><b>А. Файл со списком ссылок (HTML)</b></div>
-    <input type="file" id="dlHtmlFile" accept=".html,.htm,text/html">
-    <div class="muted" id="dlHtmlInfo">Файл не выбран</div>
-
-    <div style="margin-top:10px"><b>Б. Сбор всех ссылок из существующего Генеалогического проекта</b></div>
-    <div class="muted">1. Выберите файл GEDCOM проекта (.ged). 2. Из него собираются все ссылки с доменами ya.ru и yandex.ru (в том числе разорванные на строки CONC/CONT)
-      и передаются на обработку. 3. Затем укажите, куда сохранить файл результатов Excel.</div>
-    <input type="file" id="dlGedFile" accept=".ged,.gedcom,text/plain">
-    <div class="muted" id="dlGedInfo">Файл не выбран</div>
-
-    <div class="muted" id="dlInfo" style="margin-top:8px">Список пуст.</div>
-    <div class="row">
-      <button id="dlStartBtn" class="primary" disabled>Выбрать куда сохранить Excel и скачать образы страниц</button>
-      <button id="dlClearBtn">Очистить список</button>
-    </div>
-    <div class="muted">В выбранную папку записываются: <code>result_links.xlsx</code> (столбцы «Исходная ссылка», «Локальная Ссылка на страницу»,
-      «Ссылка на ЦГА Москвы»; второй лист — все найденные ссылки со статусом и местом в GEDCOM), <code>list_links_fixed.html</code> (исправленный
-      список без повторов) и папка <code>Archive_Scans</code> со сканами (уже существующие файлы пропускаются), журнал <code>links_run_log.txt</code>.</div>
-  </fieldset>
 
   <div id="banner">
     <div id="bannerText"></div>
