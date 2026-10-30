@@ -118,6 +118,32 @@
     <button id="stopBtn" disabled>Остановить и сохранить</button>
   </div>
 
+  <fieldset>
+    <legend>6. Скачать графические образы страниц из списка ссылок</legend>
+    <div class="muted">Отдельный режим: данные людей не разбираются, только сохраняются сканы страниц (навык «Сохранить Скан», Scrpt_YA_Orig_Scan)
+      и составляется Excel. Ссылки приводятся к виду «ya.ru/archive/catalog/&lt;дело&gt;/&lt;страница&gt;» (параметры «?center=», «zoom» и т. п. отбрасываются),
+      дубликаты удаляются; ссылка-диапазон (поиск «sheet_page_from…to») раскрывается в отдельные страницы. Перед запуском войдите в Яндекс в этом же Chrome.</div>
+
+    <div style="margin-top:10px"><b>А. Файл со списком ссылок (HTML)</b></div>
+    <input type="file" id="dlHtmlFile" accept=".html,.htm,text/html">
+    <div class="muted" id="dlHtmlInfo">Файл не выбран</div>
+
+    <div style="margin-top:10px"><b>Б. Сбор всех ссылок из существующего Генеалогического проекта</b></div>
+    <div class="muted">1. Выберите файл GEDCOM проекта (.ged). 2. Из него собираются все ссылки с доменами ya.ru и yandex.ru (в том числе разорванные на строки CONC/CONT)
+      и передаются на обработку. 3. Затем укажите, куда сохранить файл результатов Excel.</div>
+    <input type="file" id="dlGedFile" accept=".ged,.gedcom,text/plain">
+    <div class="muted" id="dlGedInfo">Файл не выбран</div>
+
+    <div class="muted" id="dlInfo" style="margin-top:8px">Список пуст.</div>
+    <div class="row">
+      <button id="dlStartBtn" class="primary" disabled>Выбрать куда сохранить Excel и скачать образы страниц</button>
+      <button id="dlClearBtn">Очистить список</button>
+    </div>
+    <div class="muted">В выбранную папку записываются: <code>result_links.xlsx</code> (столбцы «Исходная ссылка», «Локальная Ссылка на страницу»,
+      «Ссылка на ЦГА Москвы»; второй лист — все найденные ссылки со статусом и местом в GEDCOM), <code>list_links_fixed.html</code> (исправленный
+      список без повторов) и папка <code>Archive_Scans</code> со сканами (уже существующие файлы пропускаются), журнал <code>links_run_log.txt</code>.</div>
+  </fieldset>
+
   <div id="banner">
     <div id="bannerText"></div>
     <div class="row"><button id="continueBtn">Продолжить</button></div>
@@ -133,6 +159,7 @@
   <script src="xlsx-writer.js"></script>
   <script src="excel-sheets.js"></script>
   <script src="logic.js"></script>
+  <script src="links-tools.js"></script>
   <script src="revision-rows.js"></script>
   <script src="names-ru.js"></script>
   <script src="confession-rows.js"></script>

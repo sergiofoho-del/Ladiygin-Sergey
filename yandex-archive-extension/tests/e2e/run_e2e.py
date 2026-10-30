@@ -3,7 +3,8 @@
 нажимается «Начать», проверяются шкала времени, сохранение сканов и Excel.
 Запуск: xvfb-run -a python3 tests/e2e/run_e2e.py <сценарий> <out_dir> [--chrome <путь к chrome>] [--debug <папка yaarchive_debug/...>]
 сценарии: conf (исповедные -> вид исповедные, сканы), conf_as_rev (исповедные -> вид ревизские, сканы),
-          rev_as_conf (ревизские -> вид исповедные, сканы)"""
+          rev_as_conf (ревизские -> вид исповедные, сканы),
+          links (раздел 6: образы страниц из HTML со ссылками и из GEDCOM; папка результата — OPFS вместо окна выбора папки)"""
 import json, re, sys, time, glob, os, shutil
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -118,6 +119,60 @@ with sync_playwright() as p:
     app = ctx.new_page()
     app.goto(f'chrome-extension://{ext_id}/app.html')
     app.wait_for_timeout(800)
+    if scenario == 'links':
+        A, B = '3aa266f8-a0ed-434d-bd5d-c095d45efc1b', 'bfed2966-e671-4c18-bbb0-a9551ad28f8e'
+        (out / 'in').mkdir()
+        (out / 'in' / 'ссылки.html').write_text(
+            f'<p>1739 <a href="https://ya.ru/archive/catalog/{A}/865?center=0.5,0.4&amp;zoom=3">1</a></p>'
+            f'<p><a href="https://ya.ru/archive/catalog/{A}/865">дубль</a></p>'
+            f'<p><a href="https://yandex.ru/archive/catalog/{A}/866?center=1,1">2</a></p>'
+            f'<p><a href="https://ya.ru/archive/search?fileId={A}&amp;sheet_page_from=865&amp;sheet_page_to=867">диапазон</a></p>'
+            f'<p><a href="https://ya.ru/archive/catalog/{A}">дело целиком</a></p>', encoding='utf-8')
+        (out / 'in' / 'проект.ged').write_text('\r\n'.join([
+            '0 HEAD', '1 CHAR UTF-8', '0 @I1@ INDI', '1 NAME Иван /Ладыгин/',
+            f'1 NOTE Ревизия https://ya.ru/archive/catalog/{B}/16', '2 CONC 5?center=0.1,0.2', f'1 SOUR https://ya.ru/archive/catalog/{A}/866',
+            '1 WWW https://example.com/x', '0 TRLR']), encoding='utf-8')
+        app.evaluate("""() => { window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('dl_out', { create: true }); }""")
+        app.set_input_files('#dlHtmlFile', str(out / 'in' / 'ссылки.html'))
+        app.set_input_files('#dlGedFile', str(out / 'in' / 'проект.ged'))
+        app.wait_for_timeout(600)
+        info = app.inner_text('#dlInfo')
+        app.click('#dlStartBtn')
+        t0 = time.time()
+        while time.time() - t0 < 240:
+            if app.inner_text('#status').startswith('Готово'):
+                break
+            app.wait_for_timeout(500)
+        app.wait_for_timeout(1500)
+        res = app.evaluate("""async () => {
+            const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('dl_out');
+            const out = {};
+            const walk = async (dir, pre) => { for await (const [n, h] of dir.entries()) {
+                if (h.kind === 'directory') await walk(h, pre + n + '/');
+                else { const f = await h.getFile(); out[pre + n] = f.size < 200000 || /\\.(xlsx|html|txt)$/.test(n) ? btoa(String.fromCharCode(...new Uint8Array(await f.arrayBuffer()))) : String(f.size); } } };
+            await walk(d, ''); return out; }""")
+        import base64
+        for name, b in res.items():
+            if name.endswith(('.xlsx', '.html', '.txt')):
+                (out / 'dl_out').mkdir(exist_ok=True); (out / 'dl_out' / Path(name).name).write_bytes(base64.b64decode(b))
+        status = app.inner_text('#status'); log = app.inner_text('#log')
+        ctx.close()
+        names = sorted(res)
+        print(json.dumps({'info': info, 'status': status, 'files': names, 'stats': stats}, ensure_ascii=False, indent=1))
+        from openpyxl import load_workbook
+        wb = load_workbook(out / 'dl_out' / 'result_links.xlsx')
+        ws = wb['Страницы']
+        rows = [[c.value for c in r] for r in ws.iter_rows()]
+        print(rows)
+        ok = status.startswith('Готово') and rows[0] == ['Исходная ссылка', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
+        ok &= len(rows) == 1 + 4                      # 865, 866, 867 (дело A) и 165 (дело B); без дублей и без «дела целиком»
+        ok &= sum(1 for n in names if n.startswith('Archive_Scans/') and n.endswith('.jpg')) == 4
+        ok &= all(r[1] and r[1].endswith('.jpg') and 'ЦГА Москвы' in r[2] for r in rows[1:])
+        ok &= all(c.hyperlink.target.startswith('Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[1:2] if c.hyperlink)
+        ok &= 'list_links_fixed.html' in names and 'links_run_log.txt' in names
+        ok &= 'center' not in (out / 'dl_out' / 'list_links_fixed.html').read_text(encoding='utf-8')
+        ok &= stats['pages'] == 4 and stats['grant'] == 4
+        print('E2E links', 'OK' if ok else 'ОШИБКА'); sys.exit(0 if ok else 1)
     proc_mode = 'revision' if scenario.startswith('rev') else 'confession'
     app.check(f'input[name="mode"][value="{proc_mode}"]')
     want_rev_view = scenario in ('conf_as_rev',)
