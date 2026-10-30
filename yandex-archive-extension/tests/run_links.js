@@ -61,7 +61,7 @@ assert.strictEqual(L.decodeBytes(Buffer.from([0xc8, 0xe2, 0xe0, 0xed])), 'Ива
 const meta = { [plan.unique[0].clean]: { cga: 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', scanName: 'a.jpg', scanFile: 'Archive_Scans/a.jpg', scanHref: 'Archive_Scans/a.jpg' },
   [plan.unique[1].clean]: { err: 'нет данных' } };
 const sh = L.sheets(plan, meta);
-assert.deepStrictEqual(sh[0].rows[0], ['Исходная ссылка', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']);
+assert.deepStrictEqual(sh[0].rows[0], ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']);
 assert.deepStrictEqual(sh[0].rows[1].slice(1), ['a.jpg', 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165']);
 assert.strictEqual(sh[0].rows[2][1], 'не скачан: нет данных');
 assert.strictEqual(sh[0].rows.length, 5);

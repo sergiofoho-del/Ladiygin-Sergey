@@ -123,22 +123,30 @@ with sync_playwright() as p:
     app.wait_for_timeout(800)
     import base64
     def use_source(name, data):
-        """Папка со ссылками = OPFS-папка 'src' с одним файлом; окно выбора папки подменено."""
+        """Файл со ссылками — OPFS 'src/<name>' (окно выбора файла подменено); папка результата — OPFS 'out',
+        папка сканов по умолчанию (/Volumes/DATA/Archive_Scans) — OPFS 'scans'; окна выбора папок подменены по id."""
         app.evaluate("""async ([name, b64]) => { const root = await navigator.storage.getDirectory();
             const d = await root.getDirectoryHandle('src', { create: true });
+            const o = await root.getDirectoryHandle('out', { create: true });
+            const sc = await root.getDirectoryHandle('scans', { create: true });
             const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
-            const w = await (await d.getFileHandle(name, { create: true })).createWritable(); await w.write(u); await w.close();
-            window.showDirectoryPicker = async () => d; }""", [name, base64.b64encode(data).decode()])
-        app.click('#pickDirBtn'); app.wait_for_timeout(1000)
+            const fh = await d.getFileHandle(name, { create: true });
+            const w = await fh.createWritable(); await w.write(u); await w.close();
+            window.__pickLog = [];
+            window.showOpenFilePicker = async () => { window.__pickLog.push('file'); return [fh]; };
+            window.showDirectoryPicker = async (opt) => { window.__pickLog.push(opt && opt.id);
+              return (opt && opt.id === 'yaarchive-out') ? o : sc; }; }""", [name, base64.b64encode(data).decode()])
+        app.click('#pickFileBtn'); app.wait_for_timeout(1000)
+        app.click('#pickOutBtn'); app.wait_for_timeout(500)
 
-    def dump_src(dest):
-        res = app.evaluate("""async () => { const out = {};
+    def dump_src(dest, DUMP='out'):
+        res = app.evaluate("""async (DUMP) => { const out = {};
             const walk = async (dir, pre) => { for await (const [n, h] of dir.entries()) {
                 if (h.kind === 'directory') await walk(h, pre + n + '/');
                 else { const u = new Uint8Array(await (await h.getFile()).arrayBuffer()); let s = '';
                     for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
                     out[pre + n] = btoa(s); } } };
-            await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle('src'), ''); return out; }""")
+            await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle(DUMP), ''); return out; }""", DUMP)
         for name, b in res.items():
             f = Path(dest) / name; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(base64.b64decode(b))
         return sorted(res)
@@ -166,6 +174,11 @@ with sync_playwright() as p:
                'excel_view_visible': app.is_visible('#outFormat'), 'calib_visible': app.is_visible('#pickTextBtn'),
                'legends': app.eval_on_selector_all('fieldset:not([hidden]) > legend', 'els => els.map(e => e.textContent)'),
                'info': app.inner_text('#linksInfo')}
+        qid = '#qOrig' if scenario == 'links' else '#qLow'
+        app.click('#startBtn'); app.wait_for_timeout(500)
+        ui0['no_quality_status'] = app.inner_text('#status')       # качество не выбрано — запуск не начинается
+        app.check(qid); ui0['qNote'] = app.inner_text('#qNote'); ui0['outNote'] = app.inner_text('#outNote'); ui0['srcNote'] = app.inner_text('#srcNote')
+        ui0['checks_reset'] = [app.is_checked(x) for x in ('#useDefaults', '#qMid', '#saveScans')]
         app.click('#startBtn')
         t0 = time.time()
         while time.time() - t0 < 240:
@@ -176,20 +189,25 @@ with sync_playwright() as p:
         status = app.inner_text('#status')
         dl = out / 'dl_out'
         names = dump_src(dl)
+        scan_names = dump_src(out / 'dl_scans', 'scans')
+        ui0['pick_log'] = app.evaluate('window.__pickLog')
         ctx.close()
-        print(json.dumps({'ui': ui0, 'status': status, 'files': names, 'stats': stats}, ensure_ascii=False, indent=1))
+        print(json.dumps({'ui': ui0, 'status': status, 'files': names, 'scans': scan_names, 'stats': stats}, ensure_ascii=False, indent=1))
         from openpyxl import load_workbook
         wb = load_workbook(dl / 'result_links.xlsx')
         ws = wb['Страницы']
         rows = [[c.value for c in r] for r in ws.iter_rows()]
         print(rows)
-        ok = status.startswith('Готово') and rows[0] == ['Исходная ссылка', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
+        ok = status.startswith('Готово') and rows[0] == ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
         ok &= ui0['images_checked'] and not ui0['excel_view_visible'] and not ui0['calib_visible']
-        ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки', 'Настройки']
+        ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки', 'Куда сохранить', 'Качество скана', 'Настройки']
         ok &= len(rows) == 1 + 4                      # 865, 866, 867 (дело A) и 165 (дело B); без дублей, без «дела целиком»
-        ok &= sum(1 for n in names if n.startswith('Archive_Scans/') and n.endswith('.jpg')) == 4
+        ok &= ui0['no_quality_status'].startswith('Отметьте качество') and (('Оригинальное' if scenario == 'links' else 'Низкое') in ui0['qNote'])
+        ok &= ui0['checks_reset'] == [False, False, False] and ui0['outNote'].endswith('«out»')
+        ok &= sum(1 for n in scan_names if n.endswith('.jpg')) == 4 and not any(n.startswith('Archive_Scans/') for n in names)
+        ok &= 'yaarchive-scans-default' in ui0['pick_log']
         ok &= all(r[1] and r[1].endswith('.jpg') and 'ЦГА Москвы' in r[2] for r in rows[1:])
-        ok &= all(c.hyperlink.target.startswith('Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[1:2] if c.hyperlink)
+        ok &= all(c.hyperlink.target.startswith('file:///Volumes/DATA/Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[1:2] if c.hyperlink)
         ok &= 'list_links_fixed.html' in names and 'links_run_log.txt' in names
         ok &= 'center' not in (dl / 'list_links_fixed.html').read_text(encoding='utf-8')
         ok &= stats['pages'] == 4 and stats['grant'] == 4
@@ -228,6 +246,7 @@ with sync_playwright() as p:
     ui['stats'] = stats
     (out / 'ui.json').write_text(json.dumps(ui, ensure_ascii=False, indent=1))
     dump_src(dl_dir)
+    dump_src(out / 'scans_out', 'scans')
     ctx.close()
 files = sorted(str(f.relative_to(out / 'downloads')) for f in (out / 'downloads').rglob('*') if f.is_file())
 print(json.dumps({'files': files, 'stats': stats, 'progress': prog[-3:], 'status': ui['status'], 'outFormatInfo': ui['outFormatInfo']}, ensure_ascii=False, indent=1))
@@ -241,7 +260,7 @@ if xl:
     head = [c.value for c in ws[1]]
     ok &= head[-3:] == ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
     links = [c.hyperlink.target for row in ws.iter_rows(min_row=2) for c in row if c.hyperlink]
-    ok &= any(t.startswith('../../Archive_Scans/') for t in links) and any('/archive/catalog/' in t for t in links)
+    ok &= any(t.startswith('file:///Volumes/DATA/Archive_Scans/') for t in links) and any('/archive/catalog/' in t for t in links)
     want = 'Человек (как распознано)' if scenario in ('conf', 'rev_as_conf') else 'Люди двора (№ м/ж, как распознано, возраст)'
     ok &= want in head
 else:
