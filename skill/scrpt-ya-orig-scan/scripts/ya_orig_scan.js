@@ -8,7 +8,8 @@
 //   YaOrigScan.save({ pages: [865, 866, 867] })        — несколько страниц того же дела, один ZIP
 //   YaOrigScan.save({ from: 865, to: 880 })            — диапазон, один ZIP (+ info.txt, errors.txt)
 //   YaOrigScan.save({ fileId: '<id дела>', from, to }) — другое дело
-//   опции: quality (0.4 = 40%, 1 = без пересжатия), delay (пауза между страницами, мс; по умолчанию 1200),
+//   опции: quality — уровень качества (см. QUALITY ниже): 'original' | 'medium' | 'low' (или число 0–1; по умолчанию 0.4),
+//          delay (пауза между страницами, мс; по умолчанию 1200),
 //          download (false — не сохранять, только вернуть результат)
 //
 // Результат (Promise) сохраняется и в window.__yaOrigScan: {ok, file, pages:[{page, name, w, h, origSize, size, err}], cga}
@@ -18,6 +19,18 @@
 
   const LEAF_RE = /^\/archive\/catalog\/([^/?#]+)\/(\d+)\/?$/i;
   const MIN_BYTES = 20000;
+
+  // Уровни качества скачиваемого файла (общие для навыка и расширения):
+  //   original — «Оригинальное», 100%: файл сохраняется как отдан Яндексом, без пересжатия;
+  //   medium   — «Среднее», 50%: пересжатие в JPG качества 0.5;
+  //   low      — «Низкое», 20%: пересжатие в JPG качества 0.2.
+  // Размер в пикселях при любом уровне не меняется.
+  const QUALITY = {
+    original: { id: 'original', label: 'Оригинальное', percent: 100, value: 1 },
+    medium: { id: 'medium', label: 'Среднее', percent: 50, value: 0.5 },
+    low: { id: 'low', label: 'Низкое', percent: 20, value: 0.2 },
+  };
+  const qualityValue = (q) => (typeof q === 'string' && QUALITY[q] ? QUALITY[q].value : q);
 
   const sanitize = (v) => String(v || '').replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -142,7 +155,7 @@
       const from = opts.from || (cur && +cur[2]), to = opts.to || from;
       pages = []; for (let n = from; n <= to; n++) pages.push(n);
     }
-    const quality = opts.quality === undefined ? 0.4 : opts.quality;
+    const quality = opts.quality === undefined ? 0.4 : qualityValue(opts.quality);
     const delay = opts.delay === undefined ? 1200 : opts.delay;
     const out = { ok: false, pages: [], file: '', cga: '' };
     root.__yaOrigScan = out;
@@ -185,7 +198,7 @@
     return out;
   }
 
-  const api = { save, pageInfo, names, fetchOriginal, recompress, zip };
+  const api = { save, pageInfo, names, fetchOriginal, recompress, zip, QUALITY, qualityValue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YaOrigScan = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

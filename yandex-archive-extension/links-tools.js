@@ -135,8 +135,8 @@
   }
 
   // Строки листов Excel. meta[clean] = {cga, scanFile, scanHref, scanName, err}
-  const HEAD_MAIN = ['Исходная ссылка', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы'];
-  const HEAD_ALL = ['Исходная ссылка', 'Ссылка для скачивания', 'Статус', 'Где найдена'];
+  const HEAD_MAIN = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы'];
+  const HEAD_ALL = ['Ссылка на страницу', 'Ссылка для скачивания', 'Статус', 'Где найдена'];
   function sheets(plan, meta) {
     const main = [HEAD_MAIN], mainLinks = [];
     plan.unique.forEach((u) => {

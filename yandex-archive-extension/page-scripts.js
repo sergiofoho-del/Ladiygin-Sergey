@@ -45,7 +45,12 @@
 
     if (opts.useNext) {
       const nx = await getNext();
+      if (!nx && opts.nextOnly) return { found: false, text: '', date: '', nextNode: null, origin: location.origin };
       if (nx) {
+        if (opts.nextOnly) {      // образы страниц: нужны только код скана и путь дела (ссылки), блоки текста не разбираются
+          return { found: true, text: '', textHow: '', date: '', dateHow: '', textBlocks: [], overlayBlocks: [],
+            nextNode: { id: nx.node.id, crumbs: nx.node.crumbs, joinedTextBlocks: [], textBlocks: [] }, nextHow: nx.how, origin: location.origin, html: null, debug: null };
+        }
         const tbText = nx.node.textBlocks.map((t) => String(t.text || '').trim()).filter(Boolean).join('\n');
         return {
           found: true, text: tbText, textHow: 'данные страницы (' + nx.how + ')', date: '', dateHow: '',
@@ -281,14 +286,15 @@
       if (ct && ct.indexOf('image/') !== 0) return { ok: false, err: 'сервер вернул не изображение (' + ct + ')' };
       if (bytes.length < MIN_BYTES) return { ok: false, err: 'слишком маленький файл (' + bytes.length + ' байт), вероятно превью' };
       let out = bytes, w = 0, h = 0, recompressed = false;
-      try {
+      const q = typeof quality === 'number' && quality > 0 ? Math.min(quality, 1) : 0.4;
+      if (q < 1) try {
         const bmp = await createImageBitmap(new Blob([bytes]));
         w = bmp.width; h = bmp.height;
         const c = new OffscreenCanvas(w, h);
         const ctx = c.getContext('2d');
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(bmp, 0, 0);
         if (bmp.close) bmp.close();
-        const blob = await c.convertToBlob({ type: 'image/jpeg', quality: quality || 0.4 });
+        const blob = await c.convertToBlob({ type: 'image/jpeg', quality: typeof quality === 'number' && quality > 0 ? Math.min(quality, 1) : 0.4 });
         if (blob && blob.size > 1000 && blob.size < bytes.length) { out = new Uint8Array(await blob.arrayBuffer()); recompressed = true; }
       } catch (e) { /* сохраняем оригинал */ }
       let bin = '';

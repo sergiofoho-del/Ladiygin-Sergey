@@ -21,6 +21,9 @@
     button { font: inherit; padding: 7px 16px; border-radius: 6px; border: 1px solid #8886; cursor: pointer; background: #8881; }
     button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
     button:disabled { opacity: .45; cursor: default; }
+    .note { color: #2563eb; font-size: 13px; margin: 4px 0; word-break: break-all; }
+    @media (prefers-color-scheme: dark) { .note { color: #7aa7ff; } }
+    input[type=text] { font: inherit; padding: 4px 8px; width: 100%; box-sizing: border-box; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
     code { font: 12.5px ui-monospace, Menlo, monospace; word-break: break-all; }
     #banner { display: none; border: 1px solid #d97706; background: #f59e0b22; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
@@ -44,6 +47,8 @@
   <h1>Яндекс Архив — сбор людей округи</h1>
   <div class="muted">Перед запуском войдите в Яндекс в этом же Chrome (откройте ya.ru/archive). Эту вкладку не закрывайте, пока идёт работа.</div>
 
+  <label><input type="checkbox" id="useDefaults"> <b>Использовать умолчания</b> — взять файл и папки, выбранные в прошлый раз
+    (без флажка файл и папки выбираются вручную при каждом запуске)</label>
   <fieldset>
     <legend>Тип обработки данных</legend>
     <label class="mode"><input type="radio" name="mode" value="confession" checked>
@@ -57,16 +62,40 @@
   <fieldset>
     <legend>Откуда взять ссылки</legend>
     <div class="row">
-      <button id="pickDirBtn" class="primary">Выбрать папку с файлом ссылок (.html или .ged)</button>
-      <select id="linksSel" hidden></select>
+      <button id="pickFileBtn" class="primary">Выбрать файл со ссылками (.html или .ged)</button>
     </div>
-    <div class="muted" id="dirInfo">Папка не выбрана</div>
-    <div class="muted" id="linksInfo">Файл ссылок не выбран</div>
-    <div class="muted" data-only="confession revision">Файл .html — список ссылок на документы. Результат (Excel), журнал и отладочные файлы
-      сохраняются в эту же папку: «yaarchive_debug/&lt;время запуска&gt;/». Папка запоминается до следующего раза.</div>
-    <div class="muted" data-only="images">Файл .ged (генеалогический проект) или .html (список ссылок): тип определяется по файлу.
-      Результат — <code>result_links.xlsx</code>, <code>list_links_fixed.html</code>, журнал и папка <code>Archive_Scans</code> со сканами —
-      сохраняется в эту же папку (или в другую, если отметить «Выбрать куда сохранить» в настройках).</div>
+    <div class="note" id="srcNote">Файл не выбран</div>
+    <div class="muted" id="linksInfo"></div>
+    <div class="muted" data-only="images">Файл .ged (генеалогический проект) или .html (список ссылок): тип файла определяется по расширению.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Куда сохранить</legend>
+    <div class="row">
+      <button id="pickOutBtn" class="primary">Выбрать куда сохранить результат</button>
+    </div>
+    <div class="note" id="outNote">Папка результата не выбрана</div>
+    <div class="muted" data-only="confession revision">В выбранную папку пишутся result.xlsx, журнал и отладочный пакет «yaarchive_debug/&lt;время запуска&gt;/».</div>
+    <div class="muted" data-only="images">В выбранную папку пишутся <code>result_links.xlsx</code>, <code>list_links_fixed.html</code> и журнал.</div>
+    <div id="scanWrap">
+      <div class="row">
+        <button id="pickScanBtn">Выбрать папку «Archive_Scans» для сканов</button>
+      </div>
+      <div class="note" id="scanNote">Папка сканов не выбрана — будет /Volumes/DATA/Archive_Scans</div>
+      <label>Путь к папке сканов для ссылок в Excel (нужен, если она не внутри папки результата):
+        <input type="text" id="scanPath" value="/Volumes/DATA/Archive_Scans" spellcheck="false"></label>
+      <div class="muted">Если файл скана уже существует, он пропускается. Браузер не может писать по строке пути, поэтому
+        при первом запуске без выбранной папки расширение попросит указать /Volumes/DATA/Archive_Scans в окне выбора и запомнит её.</div>
+    </div>
+  </fieldset>
+
+  <fieldset data-only="images">
+    <legend>Качество скана</legend>
+    <label><input type="checkbox" id="qOrig" name="q"> <b>Оригинальное</b> — 100% (без пересжатия)</label>
+    <label><input type="checkbox" id="qMid" name="q"> <b>Среднее</b> — 50%</label>
+    <label><input type="checkbox" id="qLow" name="q"> <b>Низкое</b> — 20%</label>
+    <div class="note" id="qNote">Качество не выбрано</div>
+    <div class="muted">Уровни качества определены в навыке «Сохранить Скан» (Scrpt_YA_Orig_Scan). Размер в пикселях не меняется.</div>
   </fieldset>
 
   <fieldset data-only="confession revision">
@@ -99,12 +128,8 @@
     </label>
     <div class="muted" id="outFormatInfo"></div>
     <label style="margin-top:10px"><input type="checkbox" id="saveScans"> <b>Сохранить Графические сканы?</b> — применить навык «Сохранить Скан» (Scrpt_YA_Orig_Scan)</label>
-    <label style="margin-left:22px"><input type="checkbox" id="scanPick"> Выбрать куда сохранить <span class="muted" id="scanPickInfo"></span></label>
     <div class="muted">Оригинал скана каждой страницы (JPG, качество 40%, размер в пикселях как у оригинала) сохраняется в папку
-      «Archive_Scans»: в выбранной папке (флажок «Выбрать куда сохранить»; если выбрана сама папка «Archive_Scans» — прямо в неё),
-      иначе — рядом с result.xlsx (если для него выбрана папка) или в папке из раздела 2. Если файл скана уже существует,
-      он пропускается. В Excel — столбец «Локальная Ссылка на страницу» (ссылка на файл скана; работает, когда папка сканов
-      лежит внутри папки результатов или папки со ссылками).</div>
+      «Archive_Scans» (раздел «Куда сохранить»). В Excel — столбец «Локальная Ссылка на страницу».</div>
   </fieldset>
 
   <fieldset>
@@ -112,10 +137,6 @@
     <label><input type="checkbox" id="showTab"> Показывать рабочую вкладку (если страницы не успевают прогружаться в фоне)</label>
     <label data-only="confession revision"><input type="checkbox" id="debugHtml" checked> Сохранить отладочные файлы первой страницы (first_page.html, first_page_debug.json, first_page_next_data.json)</label>
     <label data-only="confession revision"><input type="checkbox" id="debugAll" checked> Сохранять дополнительные отладочные файлы (результат привязки столбцов по каждой странице). Данные страниц и run_summary.json для общего скрипта yaarchive сохраняются всегда.</label>
-    <label><input type="checkbox" id="outPick"> <b>Выбрать куда сохранить</b> результат <span id="outName">result.xlsx</span> <span class="muted" id="outPickInfo"></span></label>
-    <div class="muted" data-only="confession revision">Без флажка result.xlsx сохраняется в папку запуска «yaarchive_debug/&lt;дата_время&gt;_v&lt;версия&gt;/» рядом с файлом ссылок.
-      Папки запоминаются; при следующем запуске Chrome один раз попросит подтвердить доступ.</div>
-    <div class="muted" data-only="images">Без флажка всё сохраняется в папку, где лежит файл ссылок. Папки запоминаются; при следующем запуске Chrome один раз попросит подтвердить доступ.</div>
   </fieldset>
 
   <div class="row">
