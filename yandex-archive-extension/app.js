@@ -19,7 +19,10 @@
 
   let linksDoc = null;       // разобранный HTML со ссылками
   let items = [];            // ссылки
-  let dlPlan = null;         // раздел 6: {unique, entries} после удаления дубликатов
+  let dlPlan = null;         // тип «Скачать графические образы»: {unique, entries} после удаления дубликатов
+  let linksText = '';        // содержимое выбранного файла ссылок
+  let linksKind = '';        // 'html' | 'ged' — определяется по расширению файла
+  let modeBeforeGed = null;  // тип обработки до автоматического переключения на .ged
   let running = false;
   let stopRequested = false;
   let resumeResolver = null;
@@ -36,7 +39,7 @@
 
   // outFormat — вид результата в Excel ('confession' | 'revision'), не зависит от типа обработки;
   // saveScans — сохранять оригиналы сканов в «Archive_Scans»
-  let settings = { mode: Logic.DEFAULT_MODE, textSel: '', dateSel: '', outFormat: '', saveScans: false, outPick: false, scanPick: false };
+  let settings = { mode: Logic.DEFAULT_MODE, textSel: '', dateSel: '', outFormat: '', saveScans: false, outPick: false, scanPick: false, imagesMode: false };
   let outPicked = null;      // папка для result.xlsx (флажок «Выбрать куда сохранить» в разделе 5)
   let scanPicked = null;     // папка для сканов (флажок «Выбрать куда сохранить» у «Сохранить Графические сканы?»)
   let scanRel = undefined;   // путь от result.xlsx к папке сканов (для «Локальная Ссылка на страницу»); null — не вычислить
@@ -103,7 +106,6 @@
     $('startBtn').disabled = on;
     $('outPick').disabled = on;
     $('scanPick').disabled = on;
-    $('linksFile').disabled = on;
     $('pickDirBtn').disabled = on;
     $('linksSel').disabled = on;
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = on; });
@@ -114,10 +116,6 @@
     $('resetSelBtn').disabled = on;
     $('saveBtn').disabled = !on;
     $('stopBtn').disabled = !on;
-    $('dlHtmlFile').disabled = on;
-    $('dlGedFile').disabled = on;
-    $('dlClearBtn').disabled = on;
-    $('dlStartBtn').disabled = on || !(dlPlan && dlPlan.unique.length);
   }
 
   function showSelectors() {
@@ -128,7 +126,8 @@
   // ---------------------------------------------------------------- настройки
   async function loadSettings() {
     try {
-      const got = await chrome.storage.local.get(['mode', 'textSel', 'dateSel', 'outFormat', 'saveScans', 'outPick', 'scanPick']);
+      const got = await chrome.storage.local.get(['mode', 'textSel', 'dateSel', 'outFormat', 'saveScans', 'outPick', 'scanPick', 'imagesMode']);
+      settings.imagesMode = !!got.imagesMode;
       settings.outPick = !!got.outPick;
       settings.scanPick = !!got.scanPick;
       if (got.mode && Logic.MODES[got.mode]) settings.mode = got.mode;
@@ -142,10 +141,19 @@
     try { await chrome.storage.local.set(settings); } catch (e) { /* ignore */ }
   }
 
+  const imagesMode = () => !!settings.imagesMode;
+  const kindNow = () => (imagesMode() ? 'images' : settings.mode);
+  // форма диалога следует за типом обработки: элементы с data-only показываются только для своих типов
   function applyModeUi() {
     $('descConfession').textContent = Logic.MODES.confession.description;
     $('descRevision').textContent = Logic.MODES.revision.description;
-    document.querySelectorAll('input[name="mode"]').forEach((r) => { r.checked = r.value === settings.mode; });
+    $('descImages').textContent = 'Только сканы страниц и Excel со ссылками. Источник — файл .ged (генеалогический проект) или .html (список ссылок); ' +
+      'ссылки очищаются от «?center=», дубликаты удаляются, диапазоны раскрываются в страницы.';
+    const cur = kindNow();
+    document.querySelectorAll('input[name="mode"]').forEach((r) => { r.checked = r.value === cur; });
+    document.querySelectorAll('[data-only]').forEach((el) => { el.hidden = !el.dataset.only.split(' ').includes(cur); });
+    $('outName').textContent = imagesMode() ? 'result_links.xlsx и Archive_Scans' : 'result.xlsx';
+    $('startBtn').textContent = 'Начать';
     applyOutUi();
   }
   // вид результата: по умолчанию как тип обработки, переключатель задаёт его явно
@@ -206,12 +214,13 @@
   document.querySelectorAll('input[name="mode"]').forEach((r) => {
     r.addEventListener('change', async () => {
       if (!r.checked) return;
-      settings.mode = r.value;
-      settings.outFormat = '';          // при смене типа обработки вид результата снова следует за ним
+      modeBeforeGed = null;
+      if (r.value === 'images') settings.imagesMode = true;
+      else { settings.imagesMode = false; settings.mode = r.value; settings.outFormat = ''; }   // вид результата снова следует за типом
       await saveSettings();
-      applyOutUi();
-      reparseLinks();
-      log(`Тип обработки: ${mode().label}.`);
+      applyModeUi();
+      refreshSource();
+      log(`Тип обработки: ${imagesMode() ? 'Скачать графические образы страниц' : mode().label}.`);
     });
   });
 
@@ -243,6 +252,31 @@
   });
 
   // ------------------------------------------------------ список ссылок
+  // Тип файла определяет обработку: .ged — только образы страниц; .html — список ссылок для выбранного типа
+  function sourceInfo(text) { $('linksInfo').textContent = text; }
+  function refreshSource() {
+    items = []; dlPlan = null; linksDoc = null;
+    if (!linksText) return;
+    const name = $('linksSel').value || 'файл';
+    if (linksKind === 'ged' && !imagesMode()) {
+      sourceInfo(`${name}: файл GEDCOM обрабатывается только в типе «Скачать графические образы страниц».`);
+      return;
+    }
+    if (imagesMode()) {
+      const src = linksKind === 'ged' ? LinksTools.gedcomLinks(linksText) : LinksTools.htmlLinks(linksText);
+      dlPlan = src.length ? LinksTools.buildPlan(src) : null;
+      if (!dlPlan) sourceInfo(`${name}: ссылок ya.ru / yandex.ru не найдено.`);
+      else {
+        const st = (re) => dlPlan.entries.filter((e) => re.test(e.status)).length;
+        sourceInfo(`${name}: найдено ссылок ${src.length}; уникальных страниц ${dlPlan.unique.length}; дубликатов ${st(/^дубликат/)}; ` +
+          `пропущено (нет номера страницы или не архив) ${st(/^пропущена/)}.`);
+      }
+      return;
+    }
+    linksDoc = new DOMParser().parseFromString(linksText, 'text/html');
+    reparseLinks();
+    $('linksInfo').textContent = `${name}: ` + $('linksInfo').textContent;
+  }
   function reparseLinks() {
     items = linksDoc ? Logic.parseLinks(linksDoc, settings.mode) : [];
     if (!linksDoc) return;
@@ -280,18 +314,18 @@
     linksDir = handle;
     const files = [];
     for await (const [name, h] of handle.entries()) {
-      if (h.kind === 'file' && /\.html?$/i.test(name)) files.push(name);
+      if (h.kind === 'file' && /\.(html?|ged)$/i.test(name)) files.push(name);
     }
     files.sort((a, b) => (a === 'list_links.html' ? -1 : b === 'list_links.html' ? 1 : a.localeCompare(b)));
     const sel = $('linksSel');
     sel.innerHTML = '';
     files.forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
     sel.hidden = files.length < 2;
-    $('dirInfo').textContent = `Папка: ${handle.name}. Результаты: ${handle.name}/yaarchive_debug/<время запуска>/`;
+    $('dirInfo').textContent = `Папка: ${handle.name}`;
     $('pickDirBtn').textContent = 'Выбрать другую папку';
     if (!files.length) {
-      linksDoc = null; items = [];
-      $('linksInfo').textContent = 'В папке нет HTML-файла со ссылками (.html).';
+      linksText = ''; linksKind = ''; refreshSource();
+      $('linksInfo').textContent = 'В папке нет файла ссылок (.html) или проекта (.ged).';
       return;
     }
     await loadLinksFromDir(files[0]);
@@ -300,11 +334,17 @@
   async function loadLinksFromDir(name) {
     try {
       const f = await (await linksDir.getFileHandle(name)).getFile();
-      linksDoc = new DOMParser().parseFromString(await f.text(), 'text/html');
-      reparseLinks();
-      $('linksInfo').textContent = `${name}: ` + $('linksInfo').textContent;
+      linksText = LinksTools.decodeBytes(new Uint8Array(await f.arrayBuffer()));
+      linksKind = /\.ged$/i.test(name) ? 'ged' : 'html';
+      if (linksKind === 'ged' && !imagesMode()) {          // .ged обрабатывается только как «образы страниц»
+        modeBeforeGed = false; settings.imagesMode = true; await saveSettings(); applyModeUi();
+        log(`Файл ${name} — GEDCOM: выбран тип «Скачать графические образы страниц».`);
+      } else if (linksKind === 'html' && modeBeforeGed === false) {   // вернулись к .html — прежний тип
+        modeBeforeGed = null; settings.imagesMode = false; await saveSettings(); applyModeUi();
+      }
+      refreshSource();
     } catch (err) {
-      linksDoc = null; items = [];
+      linksText = ''; linksKind = ''; refreshSource();
       $('linksInfo').textContent = `Не удалось прочитать ${name}: ${err.message}`;
     }
   }
@@ -326,23 +366,6 @@
     }
   });
   $('linksSel').addEventListener('change', () => loadLinksFromDir($('linksSel').value));
-
-  $('linksFile').addEventListener('change', async (e) => {
-    const f = e.target.files[0];
-    linksDir = null;          // выбран отдельный файл: сохранение в «Загрузки/yaarchive_debug/…»
-    $('dirInfo').textContent = 'Папка не выбрана: результаты — в «Загрузки/yaarchive_debug/<время запуска>/»';
-    $('linksSel').hidden = true;
-    linksDoc = null;
-    items = [];
-    if (!f) { $('linksInfo').textContent = 'Файл не выбран'; return; }
-    try {
-      linksDoc = new DOMParser().parseFromString(await f.text(), 'text/html');
-    } catch (err) {
-      $('linksInfo').textContent = 'Не удалось прочитать файл: ' + err.message;
-      return;
-    }
-    reparseLinks();
-  });
 
   // ------------------------------------------------------ рабочая вкладка
   async function getWorkTab() {
@@ -931,6 +954,7 @@
   // «Начать»: папки, выбранные флажками «Выбрать куда сохранить», подтверждаются прямо по щелчку
   async function startRun() {
     if (running || busyPicking) return;
+    if (imagesMode()) return startImages();
     if (!items.length) { setStatus('Сначала выберите HTML-файл со ссылками.'); return; }
     if (linksDir && !(await dirPermission(linksDir, true))) {
       log(`Нет доступа к папке ${linksDir.name} — результаты будут сохранены в «Загрузки/yaarchive_debug/…».`);
@@ -953,45 +977,22 @@
   }
   $('startBtn').addEventListener('click', () => startRun());
 
+  // «Начать» для образов страниц: результаты — в «выбранное место» из настроек, иначе в папку с файлом ссылок
+  async function startImages() {
+    if (!dlPlan || !dlPlan.unique.length) { setStatus('Сначала выберите папку с файлом ссылок (.ged или .html).'); return; }
+    let dir = null;
+    if (settings.outPick && outPicked && await dirPermission(outPicked, true)) dir = outPicked;
+    else if (linksDir && await dirPermission(linksDir, true)) dir = linksDir;
+    if (!dir) { setStatus('Нет доступа к папке для результатов. Выберите папку с файлом ссылок заново.'); return; }
+    await runDownload(dir);
+  }
 
-  // ------------------------------------------------------ раздел 6: образы страниц по списку ссылок
-  // Источники: HTML-файл со ссылками и/или GEDCOM проекта. Все ссылки приводятся к ya.ru/archive/catalog/<дело>/<страница>,
+
+  // ------------------------------------------------------ тип «Скачать графические образы страниц»
+  // Источник: файл .ged или .html (тип определяется по расширению). Все ссылки приводятся к ya.ru/archive/catalog/<дело>/<страница>,
   // дубликаты удаляются, для каждой страницы сохраняется скан (тот же модуль, что «Сохранить Графические сканы?»).
-  const dlSources = { html: [], ged: [] };
   let dlRunPlan = null;      // план текущего запуска
   let dlMeta = {};           // ссылка страницы -> {cga, scanName, scanFile, scanHref, err}
-
-  function dlRefresh() {
-    const src = [...dlSources.html, ...dlSources.ged];
-    dlPlan = src.length ? LinksTools.buildPlan(src) : null;
-    if (!dlPlan) { $('dlInfo').textContent = 'Список пуст.'; }
-    else {
-      const st = (re) => dlPlan.entries.filter((e) => re.test(e.status)).length;
-      $('dlInfo').textContent = `Найдено ссылок: ${src.length} (HTML: ${dlSources.html.length}, GEDCOM: ${dlSources.ged.length}). ` +
-        `Уникальных страниц: ${dlPlan.unique.length}; дубликатов: ${st(/^дубликат/)}; пропущено (нет номера страницы или не архив): ${st(/^пропущена/)}.`;
-    }
-    $('dlStartBtn').disabled = running || !(dlPlan && dlPlan.unique.length);
-  }
-  async function dlReadFile(inputId, infoId, key, extract, what) {
-    const f = $(inputId).files[0];
-    dlSources[key] = [];
-    if (!f) { $(infoId).textContent = 'Файл не выбран'; dlRefresh(); return; }
-    try {
-      const text = LinksTools.decodeBytes(new Uint8Array(await f.arrayBuffer()));
-      dlSources[key] = extract(text);
-      $(infoId).textContent = `${f.name}: ссылок ya.ru / yandex.ru — ${dlSources[key].length}` + (what ? ` (${what})` : '');
-      log(`Раздел 6: ${f.name} — ссылок ya.ru / yandex.ru: ${dlSources[key].length}.`);
-    } catch (e) { $(infoId).textContent = 'Не удалось прочитать файл: ' + e.message; }
-    dlRefresh();
-  }
-  $('dlHtmlFile').addEventListener('change', () => dlReadFile('dlHtmlFile', 'dlHtmlInfo', 'html', LinksTools.htmlLinks, ''));
-  $('dlGedFile').addEventListener('change', () => dlReadFile('dlGedFile', 'dlGedInfo', 'ged', LinksTools.gedcomLinks, 'из значений GEDCOM, с учётом CONC/CONT'));
-  $('dlClearBtn').addEventListener('click', () => {
-    $('dlHtmlFile').value = ''; $('dlGedFile').value = '';
-    dlSources.html = []; dlSources.ged = [];
-    $('dlHtmlInfo').textContent = 'Файл не выбран'; $('dlGedInfo').textContent = 'Файл не выбран';
-    dlRefresh();
-  });
 
   async function writeDl(name, blob) {
     writeChain = writeChain.then(async () => {
@@ -1089,16 +1090,6 @@
       try { await writeChain; } catch (e) { /* ошибки уже в журнале */ }
     }
   }
-
-  // Окно выбора папки открывается сразу по щелчку (Chrome разрешает его только по действию пользователя)
-  $('dlStartBtn').addEventListener('click', async () => {
-    if (running || busyPicking || !dlPlan || !dlPlan.unique.length) return;
-    if (!window.showDirectoryPicker) { setStatus('Этот Chrome не умеет выбирать папку.'); return; }
-    let h;
-    try { h = await window.showDirectoryPicker({ id: 'yaarchive-dl', mode: 'readwrite' }); }
-    catch (e) { if (!(e && e.name === 'AbortError')) setStatus('Папку выбрать не удалось: ' + (e && e.message)); return; }
-    await runDownload(h);
-  });
 
   // ------------------------------------------------------------- старт
   (async () => {
