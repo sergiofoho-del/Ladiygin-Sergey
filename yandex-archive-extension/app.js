@@ -831,6 +831,12 @@
         const fams = [];
         const hows = new Set();
         const yrOf = (v) => { const mm = String(v || '').match(/(?<!\d)(1[5-9]\d\d)(?!\d)/); return mm ? parseInt(mm[1], 10) : null; };
+        if (!it.year) {         // в файле ссылок года нет — по названию дела («… 6 ревизия …» → 1811)
+          const first = [...texts.values()].find((x) => x.nextNode && x.nextNode.crumbs);
+          const file = first ? (first.nextNode.crumbs.find((c) => c.type === 'File') || {}).name : '';
+          it.year = Logic.yearFromText(file) || null;
+          if (it.year) it.note = (it.note ? it.note + '; ' : '') + `год ${it.year} — по названию дела`;
+        }
         for (const n of [...texts.keys()].sort((a, b) => a - b)) {
           const r = texts.get(n);
           const sr = {
@@ -871,6 +877,8 @@
         const docYear = it.year || yrOf(it.url) || '';
         fams.forEach((f) => { f.year = docYear; });
         families.push(...fams);
+        const kindWarn = Logic.kindWarning([...texts.values()].map((x) => Logic.pageKindByText(x.text)), m.id);
+        if (kindWarn) { log(`${tag}: ${kindWarn}`); if (state.rows.length) state.rows[0].notes.push(kindWarn); }
         state.rows.forEach((r) => rowRecords.push(Object.assign({ year: docYear }, r)));
         (state.blocks || []).forEach((b) => blockRecords.push(Object.assign({ year: docYear }, b)));
         const persons = m.id === 'confession'
@@ -883,7 +891,7 @@
           : 'ОБРАБОТАНА';
         linkRows.push([it.year, it.url, rng, texts.size, foundAll.size,
           [...foundAll].sort().join('; '), verdict, fams.length, persons, [...hows].join('; '),
-          [it.note, state.dropped ? `отброшено служебных строк: ${state.dropped}` : '',
+          [kindWarn, it.note, state.dropped ? `отброшено служебных строк: ${state.dropped}` : '',
             state.orphans ? `несопоставленных ячеек: ${state.orphans}` : '',
             state.skipped.length ? `страницы без таблицы: ${state.skipped.join(', ')}` : ''].filter(Boolean).join('; ')]);
         log(`${tag}: диапазон ${rng} — НП ${foundAll.size}, дворов: ${fams.length}, людей: ${persons} (${[...hows].join('; ')})`);

@@ -414,6 +414,18 @@
     no_main_block: 'строка не попала ни в один блок текста',
     two_yard_numbers: 'два номера двора у одной строки',
     split_cell: 'два номера в одной ячейке разделены по высоте',
+    sex_unknown: 'пол не определён (возраст из общего столбца) — проверить',
+  };
+  // пояснения к людям (не ошибки)
+  const CONF_INFO_NOTE = {
+    age_next_line: 'ⓘ возраст записан строкой ниже номера',
+  };
+  // пояснения к странице (не ошибки): что алгоритм сделал со столбцами
+  const CONF_PAGE_INFO = {
+    age_column_split: 'столбцы возраста мужчин и женщин слиты — разделены по положению',
+    number_column_split: 'столбцы номеров мужчин и женщин слиты — разделены по положению',
+    age_by_row: 'один столбец возраста — пол взят по номеру в строке',
+    no_person_numbers: 'форма ведомости без нумерации людей',
   };
 
   // флаги страницы — по-русски
@@ -424,6 +436,7 @@
     if ((m = f.match(/^age_columns_(\d)/))) return `найдено столбцов возраста: ${m[1]} из 2`;
     if (f === 'yard_column_not_found') return 'столбец № двора не найден';
     if (f === 'age_zone_wide') return 'столбцы возраста найдены дальше обычного от списка';
+    if (CONF_PAGE_INFO[f]) return CONF_PAGE_INFO[f];
     if (f === 'left_columns_2_sex_unknown') return 'слева найдено 2 столбца из 3 — пол по номеру не определён';
     if ((m = f.match(/^orphans:(\d+)/))) return `номеров двора без строки: ${m[1]}`;
     return f;
@@ -487,6 +500,7 @@
       curPerson.rows.push(sx + (p.no ? '№' + p.no : '№?') + (p.age ? ', возр. ' + p.age : ''));
       for (const f of p.flags) {
         if (CONF_FLAG_NOTE[f]) { addNote(fam, CONF_FLAG_NOTE[f] + ' (стр. ' + page.page + ')'); notes.push(CONF_FLAG_NOTE[f]); }
+        if (CONF_INFO_NOTE[f]) notes.push(CONF_INFO_NOTE[f]);
         if (f.startsWith('split:')) notes.push(f.slice(6));
         // номера, исправленные по соседям (сквозная нумерация): только в строку человека
         let fm;
@@ -502,6 +516,8 @@
     const pageFlags = rep.flags.filter((f) => /seq_breaks|age_columns|yard_column|left_columns|orphans/.test(f));
     if (pageFlags.length && firstFam) addNote(firstFam, 'проверить страницу ' + page.page + ': ' + pageFlags.map(humanFlag).join('; '));
     if (pageFlags.length && st.rows.length > rowsStart) st.rows[rowsStart].notes.push('проверить страницу ' + page.page + ': ' + pageFlags.map(humanFlag).join('; '));
+    const infoFlags = rep.flags.filter((f) => CONF_PAGE_INFO[f.replace(/^half\d+:/, '')]);
+    if (infoFlags.length && st.rows.length > rowsStart) st.rows[rowsStart].notes.push('ⓘ стр. ' + page.page + ': ' + infoFlags.map(humanFlag).join('; '));
     st.checks[page.page] = rep.halves.map((h) => 'лист ' + h.no + ': ' +
       ['yard', 'm_no', 'f_no', 'age_m', 'age_f'].map((k) => ({ yard: 'двор', m_no: '№м', f_no: '№ж', age_m: 'возр.м', age_f: 'возр.ж' }[k]) + '=' + (h.columns[k] ? h.columns[k].cells : 0)).join(' ') +
       ', людей ' + h.people).join('; ') + (rep.flags.length ? ' | ' + rep.flags.map(humanFlag).join('; ') : '');
