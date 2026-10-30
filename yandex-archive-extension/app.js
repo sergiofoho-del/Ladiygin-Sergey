@@ -19,6 +19,7 @@
 
   let linksDoc = null;       // разобранный HTML со ссылками
   let items = [];            // ссылки
+  let dlPlan = null;         // раздел 6: {unique, entries} после удаления дубликатов
   let running = false;
   let stopRequested = false;
   let resumeResolver = null;
@@ -51,6 +52,7 @@
   let scanDir = null;        // FileSystemDirectoryHandle «Archive_Scans» (в папке результатов или в папке со ссылками)
   let outDir = null;         // папка, выбранная кнопкой «Выбрать куда сохранять Excel, и начать»: result.xlsx + Archive_Scans/
   let scanStats = { saved: 0, existed: 0, failed: 0, bytes: 0 };
+  let dlMode = false;        // идёт раздел 6: образы страниц по списку ссылок
 
   // ---------------------------------------------------------------- UI
   function log(msg) {
@@ -112,6 +114,10 @@
     $('resetSelBtn').disabled = on;
     $('saveBtn').disabled = !on;
     $('stopBtn').disabled = !on;
+    $('dlHtmlFile').disabled = on;
+    $('dlGedFile').disabled = on;
+    $('dlClearBtn').disabled = on;
+    $('dlStartBtn').disabled = on || !(dlPlan && dlPlan.unique.length);
   }
 
   function showSelectors() {
@@ -231,7 +237,7 @@
     log('Остановка запрошена — дорабатываю текущую страницу и сохраняю результат...');
     if (resumeResolver) resumeResolver();
   });
-  $('saveBtn').addEventListener('click', async () => { await saveResult(true); });
+  $('saveBtn').addEventListener('click', async () => { if (dlMode) await saveLinksResult(true); else await saveResult(true); });
   window.addEventListener('beforeunload', (e) => {
     if (running) { e.preventDefault(); e.returnValue = ''; }
   });
@@ -423,6 +429,12 @@
                   useNext: true }],
         });
         const res = (inj && inj.result) || { found: false, text: '', date: '' };
+        if (!res.found && !res.nextNode && attempt < CFG.MAX_RETRIES) {      // страница не успела отдать данные — пробуем ещё раз
+          lastErr = 'окно распознанного текста не найдено';
+          log(`  страница ${n}: данных нет, повтор ${attempt + 2}/${CFG.MAX_RETRIES + 1}`);
+          await sleep(3000);
+          continue;
+        }
         if (wantHtml && res.html) {
           saveOut('first_page.html', new Blob([res.html], { type: 'text/html;charset=utf-8' }));
           if (res.debug) saveOut('first_page_debug.json', new Blob([JSON.stringify(res.debug)], { type: 'application/json' }));
@@ -468,7 +480,7 @@
   // иначе «Archive_Scans» в папке результатов (outDir), иначе — в папке со ссылками.
   async function getScanDir() {
     if (scanDir) return scanDir;
-    if (scanPicked && settings.scanPick) {
+    if (scanPicked && settings.scanPick && !dlMode) {
       try {
         scanDir = scanPicked.name === SCAN_DIR ? scanPicked : await scanPicked.getDirectoryHandle(SCAN_DIR, { create: true });
       } catch (e) { log(`Не удалось открыть выбранную папку сканов «${scanPicked.name}» (${e.message}).`); }
@@ -521,7 +533,8 @@
     } catch (e) { res = { ok: false, err: e.message }; }
     if (!res || !res.ok) {
       scanStats.failed++;
-      log(`  стр. ${n}: скан не сохранён — ${(res && res.err) || 'нет ответа'}`);
+      m.scanErr = (res && res.err) || 'нет ответа';
+      log(`  стр. ${n}: скан не сохранён — ${m.scanErr}`);
       return Date.now() - t0;
     }
     const bin = atob(res.b64), bytes = new Uint8Array(bin.length);
@@ -542,6 +555,7 @@
       log(`  стр. ${n}: скан ${m.scanName} (${res.w}×${res.h}, ${Math.round(res.origSize / 1024)} КБ → ${Math.round(res.size / 1024)} КБ)`);
     } catch (e) {
       scanStats.failed++;
+      m.scanErr = 'не записан: ' + e.message;
       log(`  стр. ${n}: скан не записан — ${e.message}`);
     }
     return Date.now() - t0;
@@ -785,6 +799,7 @@
             const r = await fetchSheet(it.fileId, n);
             pageCache.set(key, r);
             noteMeta(r, n);
+            if (r.err && !stopRequested) log(`  ВНИМАНИЕ: страница ${n} (${it.year ?? '—'}) не загружена: ${r.err}`);
             // скан сохраняется, пока рабочая вкладка ещё на этой странице; время скана идёт в счёт паузы
             let scanMs = 0;
             if (settings.saveScans && r.nextNode && !stopRequested) scanMs = await saveScan(r, n);
@@ -882,6 +897,11 @@
         log(`Сканы: сохранено ${scanStats.saved} (${Math.round(scanStats.bytes / 1048576)} МБ), уже были ${scanStats.existed}, ` +
             `не удалось ${scanStats.failed}. Папка: ${outDir ? `«${outDir.name}/${SCAN_DIR}/»` : linksDir ? `«${linksDir.name}/${SCAN_DIR}/»` : `«Загрузки/${SCAN_DIR}/»`}.`);
       }
+      const failedPages = debugIndex.filter((x) => x.how === 'ошибка загрузки');
+      if (failedPages.length) {
+        log(`ВНИМАНИЕ: не загружено страниц — ${failedPages.length}: ${failedPages.map((x) => `${x.year ?? '—'} стр. ${x.page}`).join('; ')}. ` +
+            'Данных и сканов по ним нет — запустите их отдельным диапазоном (или повторно через раздел 6).');
+      }
       try { await saveResult(true); } catch (e) { log('Не удалось сохранить: ' + e.message); }
       if (debugIndex.length) {
         // run_summary.json пишется последним — признак «пакет готов» для общего скрипта (yaarchive --watch)
@@ -924,6 +944,153 @@
     await run();
   }
   $('startBtn').addEventListener('click', () => startRun());
+
+
+  // ------------------------------------------------------ раздел 6: образы страниц по списку ссылок
+  // Источники: HTML-файл со ссылками и/или GEDCOM проекта. Все ссылки приводятся к ya.ru/archive/catalog/<дело>/<страница>,
+  // дубликаты удаляются, для каждой страницы сохраняется скан (тот же модуль, что «Сохранить Графические сканы?»).
+  const dlSources = { html: [], ged: [] };
+  let dlRunPlan = null;      // план текущего запуска
+  let dlMeta = {};           // ссылка страницы -> {cga, scanName, scanFile, scanHref, err}
+
+  function dlRefresh() {
+    const src = [...dlSources.html, ...dlSources.ged];
+    dlPlan = src.length ? LinksTools.buildPlan(src) : null;
+    if (!dlPlan) { $('dlInfo').textContent = 'Список пуст.'; }
+    else {
+      const st = (re) => dlPlan.entries.filter((e) => re.test(e.status)).length;
+      $('dlInfo').textContent = `Найдено ссылок: ${src.length} (HTML: ${dlSources.html.length}, GEDCOM: ${dlSources.ged.length}). ` +
+        `Уникальных страниц: ${dlPlan.unique.length}; дубликатов: ${st(/^дубликат/)}; пропущено (нет номера страницы или не архив): ${st(/^пропущена/)}.`;
+    }
+    $('dlStartBtn').disabled = running || !(dlPlan && dlPlan.unique.length);
+  }
+  async function dlReadFile(inputId, infoId, key, extract, what) {
+    const f = $(inputId).files[0];
+    dlSources[key] = [];
+    if (!f) { $(infoId).textContent = 'Файл не выбран'; dlRefresh(); return; }
+    try {
+      const text = LinksTools.decodeBytes(new Uint8Array(await f.arrayBuffer()));
+      dlSources[key] = extract(text);
+      $(infoId).textContent = `${f.name}: ссылок ya.ru / yandex.ru — ${dlSources[key].length}` + (what ? ` (${what})` : '');
+      log(`Раздел 6: ${f.name} — ссылок ya.ru / yandex.ru: ${dlSources[key].length}.`);
+    } catch (e) { $(infoId).textContent = 'Не удалось прочитать файл: ' + e.message; }
+    dlRefresh();
+  }
+  $('dlHtmlFile').addEventListener('change', () => dlReadFile('dlHtmlFile', 'dlHtmlInfo', 'html', LinksTools.htmlLinks, ''));
+  $('dlGedFile').addEventListener('change', () => dlReadFile('dlGedFile', 'dlGedInfo', 'ged', LinksTools.gedcomLinks, 'из значений GEDCOM, с учётом CONC/CONT'));
+  $('dlClearBtn').addEventListener('click', () => {
+    $('dlHtmlFile').value = ''; $('dlGedFile').value = '';
+    dlSources.html = []; dlSources.ged = [];
+    $('dlHtmlInfo').textContent = 'Файл не выбран'; $('dlGedInfo').textContent = 'Файл не выбран';
+    dlRefresh();
+  });
+
+  async function writeDl(name, blob) {
+    writeChain = writeChain.then(async () => {
+      try {
+        const w = await (await outDir.getFileHandle(name, { create: true })).createWritable();
+        await w.write(blob); await w.close();
+      } catch (e) { log(`Не удалось записать ${name} в «${outDir.name}» (${e.message}).`); }
+    });
+    return writeChain;
+  }
+  async function saveLinksResult(final) {
+    if (!dlRunPlan || !outDir) return;
+    const bytes = await XlsxWriter.build(LinksTools.sheets(dlRunPlan, dlMeta));
+    await writeDl('result_links.xlsx', new Blob([bytes], { type: XLSX_MIME }));
+    if (final) log(`Excel сохранён: «${outDir.name}/» result_links.xlsx (страниц ${dlRunPlan.unique.length}).`);
+  }
+
+  // одна страница: скан уже есть -> пропуск без открытия страницы (имя файла известно по пути дела из первой страницы этого дела)
+  async function dlOne(u, crumbsByFile) {
+    const tPage = Date.now();
+    const known = crumbsByFile.get(u.fileId);
+    if (known) {
+      const ci = ExcelSheets.crumbInfo(known, u.page, null, 'https://ya.ru');
+      if (!ci.scanName.startsWith('YA_archive_') && await scanExists(ci.scanName)) {
+        scanStats.existed++;
+        dlMeta[u.clean] = { cga: ci.cga, scanName: ci.scanName, scanFile: `${SCAN_DIR}/${ci.scanName}`, scanHref: scanHrefFor(ci.scanName), err: '' };
+        log(`${u.clean}: скан ${ci.scanName} уже есть — пропущен.`);
+        progressStep(Date.now() - tPage);
+        return false;
+      }
+    }
+    log(`${u.clean}: загружаю страницу...`);
+    const r = await fetchSheet(u.fileId, u.page);
+    if (!r.nextNode || !r.nextNode.id) {
+      dlMeta[u.clean] = { err: r.err || 'нет данных страницы (не найден код скана)' };
+      log(`  ВНИМАНИЕ: ${u.clean} не загружена: ${dlMeta[u.clean].err}`);
+      progressStep(Date.now() - tPage);
+      return true;
+    }
+    crumbsByFile.set(u.fileId, r.nextNode.crumbs);
+    noteMeta(r, u.page);
+    const scanMs = await saveScan(r, u.page);
+    const m = pageMeta[r.url] || {};
+    dlMeta[u.clean] = { cga: m.cga || '', scanName: m.scanName || '', scanFile: m.scanFile || '', scanHref: m.scanHref || '',
+      err: m.scanFile ? '' : (m.scanErr || 'скан не сохранён') };
+    progressStep(Date.now() - tPage);
+    await sleep(Math.max(0, rand(CFG.DELAY) - scanMs));
+    return true;
+  }
+
+  async function runDownload(dir) {
+    running = true; stopRequested = false; dlMode = true;
+    outDir = dir; fileHandle = null; debugSaved = true;
+    pageMeta = {}; dlMeta = {}; scanDir = null; scanRel = undefined;
+    scanStats = { saved: 0, existed: 0, failed: 0, bytes: 0 };
+    const plan = dlRunPlan = dlPlan;
+    setRunningUi(true);
+    progressStart(plan.unique.length);
+    log(`Образы страниц: уникальных страниц ${plan.unique.length} из ссылок ${plan.entries.length}. Папка: «${dir.name}» (Excel, Archive_Scans, исправленный список).`);
+    try {
+      const cur = await chrome.tabs.getCurrent();
+      appTabId = cur ? cur.id : null;
+      await writeDl('list_links_fixed.html', new Blob([LinksTools.fixedHtml(plan)], { type: 'text/html;charset=utf-8' }));
+      await saveLinksResult(false);                       // второй лист («Все ссылки») готов сразу
+      await ensureLogin();
+      const crumbs = new Map();
+      let n = 0;
+      for (const u of plan.unique) {
+        if (stopRequested) break;
+        setStatus(`Образы страниц: ${++n} из ${plan.unique.length}`);
+        if (await dlOne(u, crumbs) && n % 10 === 0) await saveLinksResult(false);
+      }
+      // второй проход по страницам, которые не загрузились
+      const bad = plan.unique.filter((u) => dlMeta[u.clean] && dlMeta[u.clean].err);
+      if (bad.length && !stopRequested) {
+        log(`Повторная попытка для страниц, которые не удалось скачать: ${bad.length}.`);
+        progress.total += bad.length; progressShow();
+        for (const u of bad) { if (stopRequested) break; await sleep(2000); await dlOne(u, crumbs); }
+      }
+    } catch (e) {
+      log('ОШИБКА: ' + (e && e.stack ? e.stack : e));
+    } finally {
+      progressShow(true);
+      const bad = plan.unique.filter((u) => !dlMeta[u.clean] || dlMeta[u.clean].err);
+      log(`Сканы: сохранено ${scanStats.saved} (${Math.round(scanStats.bytes / 1048576)} МБ), уже были ${scanStats.existed}, не удалось ${scanStats.failed}. Папка: «${dir.name}/${SCAN_DIR}/».`);
+      if (bad.length) log(`ВНИМАНИЕ: без скана осталось ${bad.length}: ${bad.map((u) => u.clean).join('; ')}`);
+      try { await saveLinksResult(true); } catch (e) { log('Не удалось сохранить Excel: ' + e.message); }
+      if (workTabId !== null) { chrome.tabs.remove(workTabId).catch(() => {}); workTabId = null; }
+      const done = plan.unique.length - bad.length;
+      running = false; dlMode = false;
+      setRunningUi(false);
+      setStatus(`Готово. Образов страниц: ${done} из ${plan.unique.length}${stopRequested ? ' (остановлено)' : ''}. Папка: «${dir.name}».`);
+      log(`Готово. Образов страниц: ${done} из ${plan.unique.length}.`);
+      await writeDl('links_run_log.txt', new Blob([$('log').textContent], { type: 'text/plain;charset=utf-8' }));
+      try { await writeChain; } catch (e) { /* ошибки уже в журнале */ }
+    }
+  }
+
+  // Окно выбора папки открывается сразу по щелчку (Chrome разрешает его только по действию пользователя)
+  $('dlStartBtn').addEventListener('click', async () => {
+    if (running || busyPicking || !dlPlan || !dlPlan.unique.length) return;
+    if (!window.showDirectoryPicker) { setStatus('Этот Chrome не умеет выбирать папку.'); return; }
+    let h;
+    try { h = await window.showDirectoryPicker({ id: 'yaarchive-dl', mode: 'readwrite' }); }
+    catch (e) { if (!(e && e.name === 'AbortError')) setStatus('Папку выбрать не удалось: ' + (e && e.message)); return; }
+    await runDownload(h);
+  });
 
   // ------------------------------------------------------------- старт
   (async () => {
