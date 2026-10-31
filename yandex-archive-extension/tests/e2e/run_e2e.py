@@ -198,7 +198,7 @@ with sync_playwright() as p:
         ws = wb['Страницы']
         rows = [[c.value for c in r] for r in ws.iter_rows()]
         print(rows)
-        ok = status.startswith('Готово') and rows[0] == ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
+        ok = status.startswith('Готово') and rows[0] == ((['Имя персоны'] if scenario == 'links' else []) + ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа'])
         ok &= ui0['images_checked'] and not ui0['excel_view_visible'] and not ui0['calib_visible']
         ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки', 'Куда сохранить', 'Качество скана', 'Настройки']
         ok &= len(rows) == 1 + 4                      # 865, 866, 867 (дело A) и 165 (дело B); без дублей, без «дела целиком»
@@ -206,8 +206,10 @@ with sync_playwright() as p:
         ok &= ui0['checks_reset'] == [False, False, False] and ui0['outNote'].endswith('«out»')
         ok &= sum(1 for n in scan_names if n.endswith('.jpg')) == 4 and not any(n.startswith('Archive_Scans/') for n in names)
         ok &= 'yaarchive-scans-default' in ui0['pick_log']
-        ok &= all(r[1] and r[1].endswith('.jpg') and 'ЦГА Москвы' in r[2] for r in rows[1:])
-        ok &= all(c.hyperlink.target.startswith('file:///Volumes/DATA/Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[1:2] if c.hyperlink)
+        o = 1 if scenario == 'links' else 0
+        ok &= all(r[o + 1] and r[o + 1].startswith('/Volumes/DATA/Archive_Scans/') and r[o + 1].endswith('.jpg') and 'ЦГА Москвы' in r[o + 2] and r[o + 3] for r in rows[1:])
+        ok &= (scenario != 'links') or all(r[0] for r in rows[1:])
+        ok &= all(c.hyperlink.target.startswith('file:///Volumes/DATA/Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[o + 1:o + 2] if c.hyperlink)
         ok &= 'list_links_fixed.html' in names and 'links_run_log.txt' in names
         ok &= 'center' not in (dl / 'list_links_fixed.html').read_text(encoding='utf-8')
         ok &= stats['pages'] == 4 and stats['grant'] == 4
@@ -258,7 +260,7 @@ if xl:
     from openpyxl import load_workbook
     ws = load_workbook(xl[0])['Люди']
     head = [c.value for c in ws[1]]
-    ok &= head[-3:] == ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']
+    ok &= head[-3:] == ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа']
     links = [c.hyperlink.target for row in ws.iter_rows(min_row=2) for c in row if c.hyperlink]
     ok &= any(t.startswith('file:///Volumes/DATA/Archive_Scans/') for t in links) and any('/archive/catalog/' in t for t in links)
     want = 'Человек (как распознано)' if scenario in ('conf', 'rev_as_conf') else 'Люди двора (№ м/ж, как распознано, возраст)'

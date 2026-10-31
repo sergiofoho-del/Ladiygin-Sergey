@@ -1,6 +1,6 @@
 // Самопроверка листов Excel (excel-sheets.js): node tests/run_excel_sheets.js
 // - слияние одинаковых подряд идущих ссылок (с другими не смешиваются), гиперссылки;
-// - «Локальная Ссылка на страницу» и «Ссылка на ЦГА Москвы»;
+// - «Локальная Ссылка на страницу» и «Архив хранения документа»;
 // - вид результата не зависит от типа обработки (исповедные <-> ревизские).
 const path = require('path');
 const X = path.join(__dirname, '..');
@@ -31,7 +31,7 @@ const conf = [u1, u1, u1, u2, u2, u1].map((url, i) => ({ year: 1739, settlement:
 const sh = E.build({ processMode: 'confession', outFormat: 'confession', families: [], rowRecords: conf, blockRecords: [], sheetRows: [], linkRows: [], pageMeta },
   { ConfessionRows, Layout, STYLE });
 const people = sh[0];
-check(people.rows[0].slice(-3).join('|') === 'Ссылка на страницу|Локальная Ссылка на страницу|Ссылка на ЦГА Москвы', 'столбцы ссылок в конце листа «Люди»');
+check(people.rows[0].slice(-3).join('|') === 'Ссылка на страницу|Локальная Ссылка на страницу|Архив хранения документа', 'столбцы ссылок в конце листа «Люди»');
 const linkMerges = people.merges.filter((m) => m[1] === 9).map((m) => `${m[0]}-${m[2]}`);
 check(JSON.stringify(linkMerges) === JSON.stringify(['1-3', '4-5']), 'слияние только подряд одинаковых ссылок: ' + linkMerges);
 check(people.rows[6][9] === u1, 'та же ссылка после другой — отдельная ячейка, не сливается с первой группой');
@@ -79,6 +79,14 @@ check(sh2.rows.slice(1).map((r) => r[4]).join(',') === 'п0,п1,п3,п2', 'по�
 const errRow = E.build({ processMode: 'confession', outFormat: 'confession', families: [], rowRecords: [Object.assign({}, conf[0], { no: '', notes: ['нет номера человека'] })],
   blockRecords: [], sheetRows: [], linkRows: [], pageMeta }, { ConfessionRows, Layout, STYLE })[0];
 check(errRow.styleAt(1, 3).fill === E.COLORS.error && errRow.styleAt(1, 8).fill === E.COLORS.error, 'ячейки с ошибкой — светло-красные');
+
+const dt = (n) => E.docType([{ type: 'File', name: n }]);
+check(dt('9 ревизия, 1850 г.') === 'Ревизская сказка от 1850 года', 'тип: ревизская сказка с годом');
+check(dt('Ревизские сказки 8 ревизии') === 'Ревизская сказка от 1834 года', 'тип: ревизия по номеру');
+check(dt('Исповедные ведомости за 1750 год') === 'Исповедническая ведомость 1750 года', 'тип: исповедная ведомость');
+check(dt('Исповедная записная книга') === 'Исповедническая записная книга', 'тип: записная книга');
+check(dt('Метрическая книга за 1820 год') === 'Метрическая книга 1820 года', 'тип: метрическая книга');
+check(dt('') === '', 'тип: нет названия');
 
 console.log('ИТОГ:', ok ? 'OK' : 'ЕСТЬ ОШИБКИ');
 process.exit(ok ? 0 : 1);
