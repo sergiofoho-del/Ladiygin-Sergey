@@ -7,8 +7,8 @@
 так же называет файлы Scrpt_YA_Orig_Scan и навык «Сохранить Скан». Поэтому сканы, скачанные отдельно
 (userscript, ya_orig_scan.js, расширение), подключаются к готовому Excel без повторной обработки.
 
-Запуск: python link_scans.py result.xlsx --scans ../../Archive_Scans [--out result_links.xlsx]
-Ссылка в Excel — относительная от папки файла Excel (как в расширении: ../../Archive_Scans/<файл>.jpg).
+Запуск: python link_scans.py result.xlsx [--scans /Volumes/DATA/Archive_Scans] [--out result_links.xlsx]
+В столбце — локальный путь папки сканов + имя файла (по умолчанию /Volumes/DATA/Archive_Scans/<файл>.jpg), ссылка — file://… (как в расширении 2.8.0).
 """
 import argparse
 import os
@@ -49,14 +49,13 @@ def scan_name(cga):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("xlsx")
-    ap.add_argument("--scans", required=True, help="папка со сканами (Archive_Scans)")
+    ap.add_argument("--scans", default="/Volumes/DATA/Archive_Scans", help="папка со сканами (Archive_Scans); по умолчанию /Volumes/DATA/Archive_Scans")
     ap.add_argument("--out", default=None, help="куда сохранить (по умолчанию — поверх исходного файла)")
     a = ap.parse_args()
     xlsx = Path(a.xlsx).resolve()
     scans = Path(a.scans) if Path(a.scans).is_absolute() else (xlsx.parent / a.scans)
     scans = scans.resolve()
     have = {p.name for p in scans.glob("*.jpg")} if scans.is_dir() else set()
-    rel_dir = os.path.relpath(scans, xlsx.parent)
     wb = load_workbook(xlsx)
     linked = missing = 0
     for ws in wb.worksheets:
@@ -75,8 +74,9 @@ def main():
             if not name:
                 continue
             if name in have:
-                cell = ws.cell(r, head[HEAD_LOCAL], name)
-                cell.hyperlink = f"{rel_dir}/{name}".replace(os.sep, "/")
+                full = (scans / name).as_posix()          # локальный путь + имя файла
+                cell = ws.cell(r, head[HEAD_LOCAL], full)
+                cell.hyperlink = scans.joinpath(name).as_uri()      # file:///…
                 cell.font = Font(color="0563C1", underline="single")
                 linked += 1
             else:
