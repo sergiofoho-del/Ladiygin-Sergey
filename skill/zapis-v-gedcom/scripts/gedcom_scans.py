@@ -12,6 +12,7 @@
   source — «Источник»: 0 @YA_S1@ SOUR (TITL документ и год, PUBL архив хранения, NOTE страница, OBJE с FILE/FORM/TITL)
            и у персоны «1 SOUR @YA_S1@ / 2 PAGE Скан N, ссылка».
   media  — «Общий медиа-объект»: 0 @YA_M1@ OBJE (FILE, FORM, TITL, NOTE) и у персоны «1 OBJE @YA_M1@».
+--ranges — как отметка «Разворачивать диапазон…» в расширении (по умолчанию из ссылки поиска берётся одна страница).
 --in-place пишет в сам .ged, перед этим рядом сохраняется <имя>_до_сканов.ged. Без него — копия <имя>_со_сканами.ged.
 Прежние записи @YA_S…@ / @YA_M…@ перед записью убираются: повторный запуск дублей не даёт. Файл пишется в UTF-8 (в шапке CHAR UTF-8).
 Результат совпадает с расширением (gedcom-writer.js).
@@ -45,6 +46,16 @@ def decode(b):
 def clean_url(u):
     u = u.replace("&amp;", "&").replace("&#38;", "&")
     return re.sub(r"[)\].,;:!?»”…]+$", "", u)
+
+
+def urls_in(value):
+    """все ссылки архива из значения; слипшиеся («…/7;https://…/278;», «…/7https://…») делятся по началу следующей ссылки"""
+    out = []
+    for m in URL_RX.finditer(value):
+        for piece in re.split(r"(?=https?://)", m[0], flags=re.I):
+            mm = re.match(URL_RX.pattern, piece, re.I)
+            if mm: out.append(clean_url(mm[0]))
+    return out
 
 
 def records(text):
@@ -88,7 +99,7 @@ def xrefs_of(recs):
     return lambda r: own(r) if r["tag"] in ("INDI", "FAM") else cited.get(r["xref"], [])
 
 
-def parse_url(url):
+def parse_url(url, expand_range=False):
     """-> (fileId, [pages]) или None (не страница каталога — как parseArchiveUrl в links-tools.js)"""
     u = urlparse(url)
     if not re.search(r"(^|\.)(ya\.ru|yandex\.ru)$", (u.hostname or "").lower()): return None
@@ -106,20 +117,21 @@ def parse_url(url):
         if not ID_RX.match(fid) or a is None: return None
         lo, hi = (a, b if b is not None else a)
         if lo > hi: lo, hi = hi, lo
+        if not expand_range and hi > lo: lo = hi = a
         hi = min(hi, lo + MAX_RANGE - 1)
         return fid, list(range(lo, hi + 1))
     return None
 
 
-def plan_of(recs):
+def plan_of(recs, expand_range=False):
     """уникальные страницы в порядке первого появления: [{fileId, page, clean, xrefs}]"""
     xo = xrefs_of(recs)
     unique, index = [], {}
     for rec in recs:
         xs = xo(rec)
         for l in rec["lines"]:
-            for m in URL_RX.finditer(l["value"]):
-                p = parse_url(clean_url(m[0]))
+            for url in urls_in(l["value"]):
+                p = parse_url(url, expand_range)
                 if not p: continue
                 for n in p[1]:
                     key = (p[0], n)
@@ -237,11 +249,12 @@ def main():
     ap.add_argument("ged"); ap.add_argument("xlsx")
     ap.add_argument("--variant", choices=("source", "media"), required=True)
     ap.add_argument("--out"); ap.add_argument("--in-place", action="store_true")
+    ap.add_argument("--ranges", action="store_true", help="разворачивать диапазоны sheet_page_from…to (как отметка в расширении)")
     a = ap.parse_args()
     src = Path(a.ged)
     raw = src.read_bytes()
     text = decode(raw)
-    unique, meta = plan_of(records(text)), read_meta(a.xlsx)
+    unique, meta = plan_of(records(text), a.ranges), read_meta(a.xlsx)
     if len(unique) != len(meta):
         sys.exit(f"В .ged {len(unique)} уникальных страниц, а в листе «Страницы» {len(meta)} строк: Excel сделан не по этому .ged.")
     out, st = apply(text, unique, meta, a.variant)

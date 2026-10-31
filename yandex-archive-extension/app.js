@@ -110,7 +110,7 @@
 
   function setRunningUi(on) {
     $('startBtn').disabled = on;
-    ['pickFileBtn', 'pickOutBtn', 'pickScanBtn', 'useDefaults', 'scanPath', 'qOrig', 'qMid', 'qLow', 'gedWrite', 'gedSource', 'gedMedia', 'gedCopy', 'gedOrig'].forEach((id) => { $(id).disabled = on; });
+    ['pickFileBtn', 'pickOutBtn', 'pickScanBtn', 'useDefaults', 'scanPath', 'qOrig', 'qMid', 'qLow', 'gedWrite', 'gedSource', 'gedMedia', 'gedCopy', 'gedOrig', 'expandRanges'].forEach((id) => { $(id).disabled = on; });
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = on; });
     $('outFormat').disabled = on;
     $('saveScans').disabled = on;
@@ -198,6 +198,7 @@
     note('qNote', q ? `Качество скана: «${QUALITY[q].label}» — ${QUALITY[q].percent}%` : 'Качество не выбрано');
   }
   ['gedWrite', 'gedSource', 'gedMedia', 'gedCopy', 'gedOrig'].forEach((id) => $(id).addEventListener('change', showNotes));
+  $('expandRanges').addEventListener('change', () => { refreshSource(); showNotes(); });
   function scanQualityId() { return Object.keys(QUALITY).find((id) => $(id).checked) || null; }
   ['qOrig', 'qMid', 'qLow'].forEach((id) => $(id).addEventListener('change', () => {
     if ($(id).checked) Object.keys(QUALITY).forEach((o) => { if (o !== id) $(o).checked = false; });   // один из трёх
@@ -294,7 +295,7 @@
     }
     if (imagesMode()) {
       const src = linksKind === 'ged' ? LinksTools.gedcomLinks(linksText) : LinksTools.htmlLinks(linksText);
-      dlPlan = src.length ? LinksTools.buildPlan(src) : null;
+      dlPlan = src.length ? LinksTools.buildPlan(src, { expandRange: $('expandRanges').checked }) : null;
       if (!dlPlan) sourceInfo(`${name}: ссылок ya.ru / yandex.ru не найдено.`);
       else {
         const st = (re) => dlPlan.entries.filter((e) => re.test(e.status)).length;
@@ -1156,7 +1157,7 @@
     await loadSettings();
     applyModeUi();
     showSelectors();
-    ['useDefaults', 'qOrig', 'qMid', 'qLow', 'saveScans', 'showTab', 'gedWrite', 'gedOrig'].forEach((id) => { $(id).checked = false; });
+    ['useDefaults', 'qOrig', 'qMid', 'qLow', 'saveScans', 'showTab', 'gedWrite', 'gedOrig', 'expandRanges'].forEach((id) => { $(id).checked = false; });
     try { const cur = await chrome.tabs.getCurrent(); appTabId = cur ? cur.id : null; } catch (e) { /* ignore */ }
     // флажки и выбор файла/папок при запуске сброшены: всё выбирается вручную (или флажком «Использовать умолчания»)
     showNotes();

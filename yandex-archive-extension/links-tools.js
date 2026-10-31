@@ -17,6 +17,17 @@
     try { return new TextDecoder('windows-1251').decode(s); } catch (e) { return new TextDecoder('utf-8').decode(s); }
   }
 
+  // Все ссылки архива из значения: слипшиеся («…/7;https://…/278;» без пробела, «…/7https://…») делятся по началу следующей ссылки
+  function urlsIn(value) {
+    const out = [];
+    for (const m of String(value).matchAll(URL_RX)) {
+      for (const piece of m[0].split(/(?=https?:\/\/)/i)) {
+        const mm = piece.match(new RegExp('^' + URL_RX.source, 'i'));
+        if (mm) out.push(cleanUrl(mm[0]));
+      }
+    }
+    return out;
+  }
   const cleanUrl = (u) => String(u).replace(/&amp;/gi, '&').replace(/&#38;/g, '&').replace(/[)\].,;:!?»”…]+$/u, '');
 
   // ---- GEDCOM: строки уровень [@id@] тег [значение]; CONC дописывает значение без разделителя, CONT — с новой строки ----
@@ -84,7 +95,7 @@
     for (const rec of recs) {
       const person = personOf(rec), xrefs = xrefOf(rec);
       for (const ln of rec.lines) {
-        for (const m of ln.value.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: `${whereOf(rec)} (${ln.tag})`, person, xrefs });
+        for (const url of urlsIn(ln.value)) out.push({ url, where: `${whereOf(rec)} (${ln.tag})`, person, xrefs });
       }
     }
     return out;
@@ -94,13 +105,14 @@
   function htmlLinks(html) {
     const out = [];
     const s = String(html);
-    for (const m of s.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: 'HTML-файл' });
+    for (const url of urlsIn(s)) out.push({ url, where: 'HTML-файл' });
     return out;
   }
 
   // ---- одна ссылка -> страницы каталога ----
   // -> {status: 'ok'|'skip', reason, fileId, pages: [n,…]}
-  function parseArchiveUrl(url) {
+  // opts.expandRange — ссылка поиска со страницами «от…до» разворачивается в диапазон; по умолчанию берётся только страница, на которую указывает ссылка
+  function parseArchiveUrl(url, opts) {
     let u;
     try { u = new URL(url); } catch (e) { return { status: 'skip', reason: 'не удалось разобрать ссылку', pages: [] }; }
     const h = u.hostname.toLowerCase();
@@ -123,6 +135,7 @@
       let lo = a, hi = b0 === null ? a : b0;
       if (lo > hi) [lo, hi] = [hi, lo];
       let note = '';
+      if (!(opts && opts.expandRange) && hi > lo) { note = `в ссылке поиска страницы ${lo}–${hi}: взята только страница ${a}`; hi = lo = a; }
       if (hi - lo + 1 > MAX_RANGE) { hi = lo + MAX_RANGE - 1; note = `диапазон обрезан до ${MAX_RANGE} страниц`; }
       const pages = []; for (let n = lo; n <= hi; n++) pages.push(n);
       return { status: 'ok', fileId: id, pages, note };
@@ -134,11 +147,11 @@
 
   // sources: [{url, where}] -> {unique: [{key, fileId, page, clean, origs[], wheres[]}], entries: [{url, where, status, clean, pages}]}
   // Дубликат — та же страница (fileId + номер) независимо от «?center=», домена (ya.ru/yandex.ru) и прочих параметров.
-  function buildPlan(sources) {
+  function buildPlan(sources, opts) {
     const unique = [], index = new Map(), entries = [];
     const seenUrl = new Set();
     for (const s of sources) {
-      const url = s.url, p = parseArchiveUrl(url);
+      const url = s.url, p = parseArchiveUrl(url, opts);
       const e = { url, where: s.where || '', person: s.person || '', status: '', clean: '', pages: p.pages.length };
       entries.push(e);
       if (p.status !== 'ok') { e.status = 'пропущена: ' + p.reason; continue; }

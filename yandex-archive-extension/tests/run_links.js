@@ -9,11 +9,11 @@ assert.deepStrictEqual([p.status, p.fileId, p.pages], ['ok', A, [866]]);
 p = L.parseArchiveUrl(`https://yandex.ru/archive/catalog/${A}/866/`);
 assert.deepStrictEqual(p.pages, [866]);
 // 2. диапазон в ссылке поиска
-p = L.parseArchiveUrl(`https://ya.ru/archive/search?query=x&fileId=${B}&sheet_page_from=163&sheet_page_to=165`);
+p = L.parseArchiveUrl(`https://ya.ru/archive/search?query=x&fileId=${B}&sheet_page_from=163&sheet_page_to=165`, { expandRange: true });
 assert.deepStrictEqual(p.pages, [163, 164, 165]);
 p = L.parseArchiveUrl(`https://ya.ru/archive/search?fileId=${B}&sheet_page_from=7`);
 assert.deepStrictEqual(p.pages, [7]);
-p = L.parseArchiveUrl(`https://ya.ru/archive/search?fileId=${B}&sheet_page_from=9&sheet_page_to=7`);
+p = L.parseArchiveUrl(`https://ya.ru/archive/search?fileId=${B}&sheet_page_from=9&sheet_page_to=7`, { expandRange: true });
 assert.deepStrictEqual(p.pages, [7, 8, 9]);
 // 3. пропускаемые
 assert.strictEqual(L.parseArchiveUrl(`https://ya.ru/archive/catalog/${A}`).status, 'skip');
@@ -28,7 +28,7 @@ const html = `<p>1850 <a href="https://ya.ru/archive/catalog/${B}/165?center=1,2
 <p><a href="https://ya.ru/archive/catalog/${A}">дело</a></p>`;
 const src = L.htmlLinks(html);
 assert.strictEqual(src.length, 6);   // 5 href + 1 в тексте
-const plan = L.buildPlan(src);
+const plan = L.buildPlan(src, { expandRange: true });
 assert.deepStrictEqual(plan.unique.map((u) => u.key), [`${B}:165`, `${B}:166`, `${A}:1`, `${B}:167`]);
 assert.strictEqual(plan.unique[0].origs.length, 3);   // две ссылки на страницу + диапазон, в который она входит
 assert.ok(plan.unique[0].origs[0].includes('center=1,2&zoom=2'), 'исходная ссылка сохраняется как есть, &amp; раскодирован');
@@ -82,4 +82,22 @@ assert.strictEqual(gsP[0].rows[1][0], 'Анна Ладыгина');
 assert.strictEqual(gsP[0].links.filter((l) => l[1] === 1).length, 3);
 assert.strictEqual(gsP[1].rows[0][0], 'Имя персоны');
 assert.strictEqual(L.sheets(L.buildPlan(L.htmlLinks('<a href="https://ya.ru/archive/catalog/3aa266f8-a0ed-434d-bd5d-c095d45efc1b/865">x</a>')), {})[0].rows[0][0], 'Ссылка на страницу');
+// 9. по умолчанию диапазон из ссылки поиска не разворачивается: берётся страница, на которую указывает ссылка
+const rg = L.parseArchiveUrl(`https://ya.ru/archive/search?query=x&fileId=${B}&sheet_page_from=163&sheet_page_to=165`);
+assert.deepStrictEqual(rg.pages, [163]); assert.ok(rg.note.includes('163–165'), rg.note);
+assert.strictEqual(L.buildPlan([{ url: `https://ya.ru/archive/search?fileId=${B}&sheet_page_from=163&sheet_page_to=165` }]).unique.length, 1);
+assert.strictEqual(L.parseArchiveUrl(`https://ya.ru/archive/catalog/${B}/7`, { expandRange: true }).pages.length, 1);   // обычная ссылка — всегда одна страница
+// 10. слипшиеся ссылки делятся; каждая записывается той же персоне
+const C = '16bdb517-fd1b-48ef-ae9d-849b589108f5', u = (i, n) => `https://ya.ru/archive/catalog/${i}/${n}`;
+for (const val of [`${u(A, 7)}; ${u(B, 278)}; ${u(C, 242)}; `, `${u(A, 7)};${u(B, 278)};${u(C, 242)};`, `${u(A, 7)}${u(B, 278)}${u(C, 242)}`,
+  `${u(A, 7)}?center=0.5,0.4;${u(B, 278)}?center=0.1,0.2&zoom=3;${u(C, 242)}`, `${u(A, 7)},${u(B, 278)} https://example.com/x;${u(C, 242)}`]) {
+  const g = L.gedcomLinks(['0 @I1@ INDI', '1 NAME Иван /Ладыгин/', '1 NOTE ' + val, '0 TRLR'].join('\n'));
+  assert.strictEqual(g.length, 3, val);
+  const pl = L.buildPlan(g);
+  assert.deepStrictEqual(pl.unique.map((x) => x.page), [7, 278, 242], val);
+  assert.ok(pl.unique.every((x) => x.persons[0] === 'Иван Ладыгин' && x.xrefs[0] === '@I1@'));
+}
+// слипание через CONC без пробела
+assert.strictEqual(L.gedcomLinks(['0 @I1@ INDI', '1 NOTE ' + u(A, 7) + ';', '2 CONC ' + u(B, 278) + ';', '0 TRLR'].join('\n')).length, 2);
+assert.strictEqual(L.htmlLinks(`<p>${u(A, 7)};${u(B, 278)}</p>`).length, 2);
 console.log('links: OK');
