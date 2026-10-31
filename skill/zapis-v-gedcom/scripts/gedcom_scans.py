@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+Запись в GEDCOM: вносит в .ged ссылки на сохранённые сканы страниц Яндекс Архива.
+
+Берёт .ged (ссылки ya.ru/yandex.ru архива в его записях) и result_links.xlsx, который расширение
+«Яндекс Архив — сбор людей округи» (тип «Скачать графические образы страниц из списка ссылок») сделало по этому же .ged.
+Строки листа «Страницы» идут в порядке первых ссылок .ged без повторов — по этому порядку скрипт сопоставляет их со ссылками.
+
+Запуск:
+  python gedcom_scans.py проект.ged result_links.xlsx --variant source|media [--out проект_со_сканами.ged] [--in-place]
+Варианты:
+  source — «Источник»: 0 @YA_S1@ SOUR (TITL документ и год, PUBL архив хранения, NOTE страница, OBJE с FILE/FORM/TITL)
+           и у персоны «1 SOUR @YA_S1@ / 2 PAGE Скан N, ссылка».
+  media  — «Общий медиа-объект»: 0 @YA_M1@ OBJE (FILE, FORM, TITL, NOTE) и у персоны «1 OBJE @YA_M1@».
+--in-place пишет в сам .ged, перед этим рядом сохраняется <имя>_до_сканов.ged. Без него — копия <имя>_со_сканами.ged.
+Прежние записи @YA_S…@ / @YA_M…@ перед записью убираются: повторный запуск дублей не даёт. Файл пишется в UTF-8 (в шапке CHAR UTF-8).
+Результат совпадает с расширением (gedcom-writer.js).
+"""
+import argparse
+import re
+import sys
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+from openpyxl import load_workbook
+
+URL_RX = re.compile(r"https?://(?:[\w-]+\.)*(?:ya\.ru|yandex\.ru)(?![\w.-])[^\s\"'<>\\^`{}|]*", re.I)
+ID_RX = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
+OWN_RX = re.compile(r"^@YA_[SM]\d+@$")
+MAX_RANGE = 500
+HEAD_URL, HEAD_LOCAL, HEAD_CGA, HEAD_TYPE, HEAD_PERSON = (
+    "Ссылка на страницу", "Локальная Ссылка на страницу", "Архив хранения документа", "Тип документа", "Имя персоны")
+
+
+def decode(b):
+    if b[:2] == b"\xff\xfe": return b[2:].decode("utf-16-le")
+    if b[:2] == b"\xfe\xff": return b[2:].decode("utf-16-be")
+    if len(b) >= 4 and b[0] == 0x30 and b[1] == 0 and b[2] != 0: return b.decode("utf-16-le")
+    if len(b) >= 4 and b[0] == 0 and b[1] == 0x30: return b.decode("utf-16-be")
+    if b[:3] == b"\xef\xbb\xbf": b = b[3:]
+    try: return b.decode("utf-8")
+    except UnicodeDecodeError: return b.decode("cp1251", "replace")
+
+
+def clean_url(u):
+    u = u.replace("&amp;", "&").replace("&#38;", "&")
+    return re.sub(r"[)\].,;:!?»”…]+$", "", u)
+
+
+def records(text):
+    """[{xref, tag, name, lines:[{level,tag,value}]}]; CONC дописывает, CONT — с новой строки"""
+    recs, rec, last = [], None, None
+    for raw in re.split(r"\r\n|\n|\r", text.lstrip("﻿")):
+        m = re.match(r"^\s*(\d+)\s+(?:(@[^@]+@)\s+)?([A-Za-z_0-9]+)(?:[ \t](.*))?$", raw)
+        if not m:
+            if last and raw.strip(): last["value"] += raw
+            continue
+        level, xref, tag, value = int(m[1]), m[2] or "", m[3].upper(), m[4] or ""
+        if level == 0:
+            rec = {"xref": xref, "tag": tag, "name": "", "lines": []}
+            recs.append(rec); last = None
+            if value: last = {"level": 0, "tag": tag, "value": value}; rec["lines"].append(last)
+            continue
+        if rec is None: continue
+        if tag == "CONC" and last: last["value"] += value; continue
+        if tag == "CONT" and last: last["value"] += "\n" + value; continue
+        last = {"level": level, "tag": tag, "value": value}
+        rec["lines"].append(last)
+        if tag == "NAME" and level == 1 and not rec["name"]: rec["name"] = re.sub(r"\s+", " ", value.replace("/", " ")).strip()
+    return recs
+
+
+def xrefs_of(recs):
+    by = {r["xref"]: r for r in recs if r["xref"]}
+    cited = {}
+    def own(r):
+        if r["tag"] == "INDI": return [r["xref"]]
+        if r["tag"] == "FAM":
+            return [l["value"].strip() for l in r["lines"] if l["tag"] in ("HUSB", "WIFE") and by.get(l["value"].strip(), {}).get("tag") == "INDI"]
+        return []
+    for r in recs:
+        if r["tag"] not in ("INDI", "FAM"): continue
+        for l in r["lines"]:
+            v = l["value"].strip()
+            if re.match(r"^@[^@]+@$", v) and l["tag"] in ("SOUR", "NOTE", "OBJE"):
+                for x in own(r):
+                    if x not in cited.setdefault(v, []): cited[v].append(x)
+    return lambda r: own(r) if r["tag"] in ("INDI", "FAM") else cited.get(r["xref"], [])
+
+
+def parse_url(url):
+    """-> (fileId, [pages]) или None (не страница каталога — как parseArchiveUrl в links-tools.js)"""
+    u = urlparse(url)
+    if not re.search(r"(^|\.)(ya\.ru|yandex\.ru)$", (u.hostname or "").lower()): return None
+    parts = [p for p in u.path.split("/") if p]
+    if not parts or parts[0] != "archive": return None
+    num = lambda v: int(v) if re.fullmatch(r"\d+", str(v or "").strip()) and int(v) > 0 else None
+    if len(parts) > 1 and parts[1] == "catalog":
+        fid = parts[2] if len(parts) > 2 else ""
+        p = num(parts[3] if len(parts) > 3 else None)
+        return (fid, [p]) if ID_RX.match(fid) and p else None
+    if len(parts) > 1 and parts[1] == "search":
+        q = parse_qs(u.query)
+        fid = (q.get("fileId") or [""])[0]
+        a, b = num((q.get("sheet_page_from") or [None])[0]), num((q.get("sheet_page_to") or [None])[0])
+        if not ID_RX.match(fid) or a is None: return None
+        lo, hi = (a, b if b is not None else a)
+        if lo > hi: lo, hi = hi, lo
+        hi = min(hi, lo + MAX_RANGE - 1)
+        return fid, list(range(lo, hi + 1))
+    return None
+
+
+def plan_of(recs):
+    """уникальные страницы в порядке первого появления: [{fileId, page, clean, xrefs}]"""
+    xo = xrefs_of(recs)
+    unique, index = [], {}
+    for rec in recs:
+        xs = xo(rec)
+        for l in rec["lines"]:
+            for m in URL_RX.finditer(l["value"]):
+                p = parse_url(clean_url(m[0]))
+                if not p: continue
+                for n in p[1]:
+                    key = (p[0], n)
+                    u = index.get(key)
+                    if u is None:
+                        u = index[key] = {"fileId": p[0], "page": n, "clean": f"https://ya.ru/archive/catalog/{p[0]}/{n}", "xrefs": []}
+                        unique.append(u)
+                    for x in xs:
+                        if x not in u["xrefs"]: u["xrefs"].append(x)
+    return unique
+
+
+def read_meta(xlsx):
+    ws = load_workbook(xlsx)["Страницы"]
+    rows = [[c.value for c in r] for r in ws.iter_rows()]
+    head = rows[0]
+    col = {h: i for i, h in enumerate(head)}
+    for h in (HEAD_LOCAL, HEAD_CGA):
+        if h not in col and h != HEAD_CGA: sys.exit(f"В листе «Страницы» нет столбца «{h}».")
+    cga_col = col.get(HEAD_CGA, col.get("Ссылка на ЦГА Москвы"))      # прежнее название столбца
+    out = []
+    for r in rows[1:]:
+        local = r[col[HEAD_LOCAL]] or ""
+        out.append({"local": "" if str(local).startswith("не скачан") else str(local),
+                    "cga": (r[cga_col] or "") if cga_col is not None else "",
+                    "type": (r[col[HEAD_TYPE]] or "") if HEAD_TYPE in col else ""})
+    return out
+
+
+def emit(out, level, tag, value):
+    for i, part in enumerate(re.split(r"\r\n|\n|\r", str(value))):
+        out.append((f"{level + 1} CONT" if i else f"{level} {tag}") + (" " + part[:200] if part[:200] else ""))
+        for p in range(200, len(part), 200): out.append(f"{level + 1} CONC {part[p:p + 200]}")
+
+
+def split_records(text):
+    lines = re.split(r"\r\n|\n|\r", text.lstrip("﻿"))
+    while lines and not lines[-1].strip(): lines.pop()
+    recs, rec = [], None
+    for raw in lines:
+        m = re.match(r"^\s*0\s+(?:(@[^@]+@)\s+)?([A-Za-z_0-9]+)", raw)
+        if m: rec = {"xref": m[1] or "", "tag": m[2].upper(), "lines": [raw]}; recs.append(rec)
+        elif rec is not None: rec["lines"].append(raw)
+        else: rec = {"xref": "", "tag": "", "lines": [raw]}; recs.append(rec)
+    return recs
+
+
+def strip_own(recs):
+    removed, kept = 0, []
+    for r in recs:
+        if OWN_RX.match(r["xref"]): removed += 1
+        else: kept.append(r)
+    for r in kept:
+        out, skip = [], None
+        for ln in r["lines"]:
+            m = re.match(r"^\s*(\d+)\s+(?:@[^@]+@\s+)?([A-Za-z_0-9]+)(?:[ \t](.*))?$", ln)
+            level = int(m[1]) if m else -1
+            if skip is not None:
+                if m and level > skip: continue
+                skip = None
+            if m and level > 0 and m[2].upper() in ("SOUR", "OBJE") and OWN_RX.match((m[3] or "").strip()):
+                skip = level; removed += 1; continue
+            out.append(ln)
+        r["lines"] = out
+    return kept, removed
+
+
+def apply(text, unique, meta, variant):
+    eol = "\r\n" if "\r\n" in text else "\n" if "\n" in text else "\r" if "\r" in text else "\r\n"
+    recs, removed = strip_own(split_records(text))
+    indi = {r["xref"]: r for r in recs if r["tag"] == "INDI" and r["xref"]}
+    st = {"pages": 0, "links": 0, "persons": set(), "noScan": 0, "noPerson": 0, "removed": removed}
+    added, n = [], 0
+    prefix = "YA_S" if variant == "source" else "YA_M"
+    for u, m in zip(unique, meta):
+        path = m["local"]
+        if not path: st["noScan"] += 1; continue
+        who = [x for x in u["xrefs"] if x in indi]
+        if not who: st["noPerson"] += 1; continue
+        n += 1; rid = f"@{prefix}{n}@"
+        doc = m["type"] or "Страница документа Яндекс Архива"
+        rec = [f"0 {rid} {'SOUR' if variant == 'source' else 'OBJE'}"]
+        fmt = (re.search(r"\.([A-Za-z0-9]{2,4})$", path) or [0, "jpg"])[1].lower()
+        name = re.split(r"[\\/]", path)[-1]
+        if variant == "source":
+            emit(rec, 1, "TITL", doc)
+            if m["cga"]: emit(rec, 1, "PUBL", f"Архив хранения документа: {m['cga']}")
+            emit(rec, 1, "NOTE", f"Страница в Яндекс Архиве: {u['clean']}")
+            rec.append("1 OBJE"); emit(rec, 2, "FILE", path); emit(rec, 2, "FORM", fmt); emit(rec, 2, "TITL", f"{doc}, {name}")
+        else:
+            emit(rec, 1, "FILE", path); emit(rec, 1, "FORM", fmt); emit(rec, 1, "TITL", doc)
+            emit(rec, 1, "NOTE", (f"Архив хранения документа: {m['cga']}\n" if m["cga"] else "") + f"Страница в Яндекс Архиве: {u['clean']}")
+        added.append({"lines": rec})
+        for x in who:
+            r = indi[x]
+            if variant == "source": r["lines"].append(f"1 SOUR {rid}"); emit(r["lines"], 2, "PAGE", f"Скан {u['page']}, {u['clean']}")
+            else: r["lines"].append(f"1 OBJE {rid}")
+            st["links"] += 1; st["persons"].add(x)
+        st["pages"] += 1
+    head = next((r for r in recs if r["tag"] == "HEAD"), None)
+    if head:
+        i = next((k for k, l in enumerate(head["lines"]) if re.match(r"^\s*1\s+CHAR\b", l, re.I)), -1)
+        if i >= 0: head["lines"][i] = "1 CHAR UTF-8"
+        else: head["lines"].append("1 CHAR UTF-8")
+    t = next((k for k, r in enumerate(recs) if r["tag"] == "TRLR"), -1)
+    at = t if t >= 0 else len(recs)
+    allr = recs[:at] + added + recs[at:]
+    if t < 0: allr.append({"lines": ["0 TRLR"]})
+    st["persons"] = len(st["persons"])
+    return eol.join(eol.join(r["lines"]) for r in allr) + eol, st
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("ged"); ap.add_argument("xlsx")
+    ap.add_argument("--variant", choices=("source", "media"), required=True)
+    ap.add_argument("--out"); ap.add_argument("--in-place", action="store_true")
+    a = ap.parse_args()
+    src = Path(a.ged)
+    raw = src.read_bytes()
+    text = decode(raw)
+    unique, meta = plan_of(records(text)), read_meta(a.xlsx)
+    if len(unique) != len(meta):
+        sys.exit(f"В .ged {len(unique)} уникальных страниц, а в листе «Страницы» {len(meta)} строк: Excel сделан не по этому .ged.")
+    out, st = apply(text, unique, meta, a.variant)
+    if a.in_place:
+        backup = src.with_name(src.stem + "_до_сканов.ged"); backup.write_bytes(raw)
+        dest = src; print(f"Копия до записи: {backup}")
+    else:
+        dest = Path(a.out) if a.out else src.with_name(src.stem + "_со_сканами.ged")
+    dest.write_bytes(out.encode("utf-8"))
+    print(f"Записано: {dest}\nСтраниц {st['pages']}, ссылок у персон {st['links']}, персон {st['persons']}; "
+          f"без скана {st['noScan']}, без персоны {st['noPerson']}; прежних записей заменено {st['removed']}.")
+
+
+if __name__ == "__main__":
+    main()

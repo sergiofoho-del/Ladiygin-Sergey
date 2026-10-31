@@ -69,6 +69,21 @@
     <div class="muted" data-only="images">Файл .ged (генеалогический проект) или .html (список ссылок): тип файла определяется по расширению.</div>
   </fieldset>
 
+  <fieldset id="gedBox" hidden>
+    <legend>Запись сканов в GEDCOM</legend>
+    <label><input type="checkbox" id="gedWrite"> <b>Записать ссылки на сканы в GEDCOM-файл</b> (навык «Запись в GEDCOM»)</label>
+    <div class="muted">После скачивания у каждой персоны, к которой относилась ссылка, появится ссылка на локальный скан (JPG), название документа с годом и архив хранения.</div>
+    <div id="gedOpts" style="margin-top:8px">
+      <div><b>Как записать:</b></div>
+      <label><input type="radio" name="gedVariant" id="gedSource" value="source" checked> <b>Источник</b> — запись SOUR (название и год документа, архив хранения, ссылка на страницу, файл скана) и у персоны ссылка на неё. Самый правильный для генеалогии вариант.</label>
+      <label><input type="radio" name="gedVariant" id="gedMedia" value="media"> <b>Общий медиа-объект</b> — запись OBJE (файл скана, название, описание) и у персоны ссылка на неё. Страница на нескольких людей = один объект, без повторов.</label>
+      <div style="margin-top:8px"><b>Куда записать:</b></div>
+      <label><input type="radio" name="gedTarget" id="gedCopy" value="copy" checked> В копию <code>&lt;имя&gt;_со_сканами.ged</code> в папке результата (исходный файл не меняется)</label>
+      <label><input type="radio" name="gedTarget" id="gedOrig" value="orig"> Прямо в исходный файл (перед этим рядом сохраняется копия <code>&lt;имя&gt;_до_сканов.ged</code>)</label>
+    </div>
+    <div class="note" id="gedNote">Запись в GEDCOM не включена</div>
+  </fieldset>
+
   <fieldset>
     <legend>Куда сохранить</legend>
     <div class="row">
@@ -161,6 +176,7 @@
   <script src="excel-sheets.js"></script>
   <script src="logic.js"></script>
   <script src="links-tools.js"></script>
+  <script src="gedcom-writer.js"></script>
   <script src="revision-rows.js"></script>
   <script src="names-ru.js"></script>
   <script src="confession-rows.js"></script>
