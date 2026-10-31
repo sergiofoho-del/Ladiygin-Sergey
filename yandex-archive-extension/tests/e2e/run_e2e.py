@@ -175,6 +175,7 @@ with sync_playwright() as p:
                'legends': app.eval_on_selector_all('fieldset:not([hidden]) > legend', 'els => els.map(e => e.textContent)'),
                'info': app.inner_text('#linksInfo')}
         qid = '#qOrig' if scenario == 'links' else '#qLow'
+        app.check('#expandRanges')   # в сценарии нужен диапазон 866–867 / 865–867
         app.click('#startBtn'); app.wait_for_timeout(500)
         ui0['no_quality_status'] = app.inner_text('#status')       # качество не выбрано — запуск не начинается
         if scenario == 'links':      # навык «Запись в GEDCOM»: раздел виден только для .ged; вариант «Источник», в копию
