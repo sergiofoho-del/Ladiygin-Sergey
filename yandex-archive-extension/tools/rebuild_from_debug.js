@@ -4,10 +4,10 @@
 // их через текущие confession-rows.js / revision-rows.js / layout.js и тот же модуль листов (excel-sheets.js),
 // что и расширение. Так новая версия алгоритма применяется к уже собранным страницам.
 //
-// Запуск: node tools/rebuild_from_debug.js <папка yaarchive_debug/дата_время> [result.xlsx] [--format confession|revision]
+// Запуск: node tools/rebuild_from_debug.js <папка yaarchive_debug/дата_время> [result.xlsx] [--format confession|revision] [--scans <папка Archive_Scans>]
 //   --format — вид результата в Excel (по умолчанию как тип обработки запуска).
-// Сканы: если рядом с папкой ссылок есть «Archive_Scans/<файл>.jpg» (../../Archive_Scans от папки пакета),
-// в Excel проставляется «Локальная Ссылка на страницу».
+// Сканы: если в папке сканов (по умолчанию /Volumes/DATA/Archive_Scans/, параметр --scans <папка>) есть <файл>.jpg,
+// в Excel «Локальная Ссылка на страницу» = локальный путь + имя файла (ссылка file://…).
 const fs = require('fs'), path = require('path');
 const X = path.join(__dirname, '..');
 global.Logic = require(path.join(X, 'logic.js'));
@@ -21,13 +21,16 @@ const version = JSON.parse(fs.readFileSync(path.join(X, 'manifest.json'), 'utf8'
 const args = process.argv.slice(2);
 const fi = args.indexOf('--format');
 const format = fi >= 0 ? args.splice(fi, 2)[1] : '';
+const si = args.indexOf('--scans');
+const scansArg = si >= 0 ? args.splice(si, 2)[1] : '';
 const dir = args[0];
 if (!dir) { console.error('Укажите папку отладочного пакета (yaarchive_debug/<дата_время>).'); process.exit(2); }
 const outFile = args[1] || path.join(dir, `result_${version.replace(/\./g, '_')}.xlsx`);
 const summary = JSON.parse(fs.readFileSync(path.join(dir, 'run_summary.json'), 'utf8'));
 const mode = summary.mode === 'revision' ? 'revision' : 'confession';
 const outFormat = format === 'revision' || format === 'confession' ? format : mode;
-const scanDir = path.join(dir, '..', '..', 'Archive_Scans');
+// Локальный путь к папке сканов — по умолчанию /Volumes/DATA/Archive_Scans/ (параметр --scans <папка>)
+const scanDir = (scansArg || '/Volumes/DATA/Archive_Scans').replace(/\/+$/, '');
 
 // страницы по файлам _next_data.json: ключ «год|первые 8 символов fileId|страница»
 const nodes = new Map();
@@ -56,7 +59,7 @@ for (const link of summary.links) {
       const ci = ExcelSheets.crumbInfo(node.crumbs, pg.page, node.id, new URL(pg.url).origin);
       const meta = { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName };
       if (fs.existsSync(path.join(scanDir, ci.scanName))) {
-        Object.assign(meta, { scanFile: `Archive_Scans/${ci.scanName}`, scanHref: `../../Archive_Scans/${ci.scanName}` });
+        Object.assign(meta, { scanFile: `Archive_Scans/${ci.scanName}`, scanLocal: `${scanDir}/${ci.scanName}`, scanHref: `file://${encodeURI(scanDir)}/${encodeURIComponent(ci.scanName)}` });
       }
       pageMeta[pg.url] = meta;
     }

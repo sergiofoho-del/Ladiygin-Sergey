@@ -73,12 +73,12 @@ size, err}], cga}`) — его читают отдельным вызовом ч
 проставляются по столбцу «Архив хранения документа» — имя файла скана выводится из пути:
 
 ```bash
-python scripts/link_scans.py "yaarchive_debug/<время>/result.xlsx" --scans ../../Archive_Scans
+python scripts/link_scans.py "<папка результата>/result.xlsx" --scans /Volumes/DATA/Archive_Scans
 ```
 
-Ссылка относительная от папки Excel (как в расширении): `../../Archive_Scans/<файл>.jpg`; если result.xlsx лежит
-рядом с `Archive_Scans` (режим 2.1.0), передайте `--scans Archive_Scans`. Объединённые ячейки
-учитываются (ссылка ставится в первую ячейку группы).
+В ячейке «Локальная Ссылка на страницу» — локальный путь папки сканов + имя файла
+(`/Volumes/DATA/Archive_Scans/<файл>.jpg`), ссылка — `file://…`. Параметр `--scans` по умолчанию
+`/Volumes/DATA/Archive_Scans`. Объединённые ячейки учитываются (ссылка ставится в первую ячейку группы).
 
 ## Ограничения
 
