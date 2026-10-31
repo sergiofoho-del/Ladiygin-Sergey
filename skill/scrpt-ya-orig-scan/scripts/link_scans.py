@@ -2,7 +2,7 @@
 """
 Проставить в result.xlsx ссылки на уже сохранённые сканы (столбец «Локальная Ссылка на страницу»).
 
-Имя файла скана однозначно следует из столбца «Ссылка на ЦГА Москвы»
+Имя файла скана однозначно следует из столбца «Архив хранения документа»
 («ЦГА Москвы/Фонд 203/Опись 747/Дело 15/Скан 865» (или с «Главная/Каталог/» впереди) -> «ЦГА_Москвы_[ЯА]_203-747-15-0865.jpg»),
 так же называет файлы Scrpt_YA_Orig_Scan и навык «Сохранить Скан». Поэтому сканы, скачанные отдельно
 (userscript, ya_orig_scan.js, расширение), подключаются к готовому Excel без повторной обработки.
@@ -19,7 +19,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
-HEAD_URL, HEAD_LOCAL, HEAD_CGA = "Ссылка на страницу", "Локальная Ссылка на страницу", "Ссылка на ЦГА Москвы"
+HEAD_URL, HEAD_LOCAL, HEAD_CGA = "Ссылка на страницу", "Локальная Ссылка на страницу", "Архив хранения документа"
 
 
 def scan_name(cga):
@@ -61,6 +61,8 @@ def main():
     linked = missing = 0
     for ws in wb.worksheets:
         head = {c.value: c.column for c in ws[1] if c.value}
+        if HEAD_CGA not in head and "Ссылка на ЦГА Москвы" in head:     # файлы до версии 2.8.0
+            head[HEAD_CGA] = head["Ссылка на ЦГА Москвы"]
         if HEAD_CGA not in head:
             continue
         if HEAD_LOCAL not in head:              # старый файл без столбца — добавляем в конец

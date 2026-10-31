@@ -50,7 +50,7 @@
   let linkRows = [];
   let blockRecords = [];     // блоки текста (исповедные ведомости) — для проверки деления на людей
   let rowRecords = [];       // строки таблицы внутри блоков «Крестьяне/Крестьянки» (режим «Ревизские сказки»)
-  let pageMeta = {};         // адрес страницы -> {cga, cgaUrl, scanName, scanFile, scanHref} для столбцов ссылок
+  let pageMeta = {};         // адрес страницы -> {cga, cgaUrl, scanName, scanFile, scanLocal, scanHref} для столбцов ссылок
   const SCAN_DIR = 'Archive_Scans';
   const SCAN_QUALITY = 0.4;  // JPG 40%, как в Scrpt_YA_Orig_Scan (для сканов в типах «Исповедные ведомости» / «Ревизские сказки»)
   const DEFAULT_SCANS_PATH = '/Volumes/DATA/Archive_Scans';
@@ -501,7 +501,7 @@
   function noteMeta(r, n) {
     if (!r || !r.nextNode) return;
     const ci = ExcelSheets.crumbInfo(r.nextNode.crumbs, n, r.nextNode.id, r.origin);
-    pageMeta[r.url] = Object.assign(pageMeta[r.url] || {}, { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName });
+    pageMeta[r.url] = Object.assign(pageMeta[r.url] || {}, { cga: ci.cga, cgaUrl: ci.cgaUrl, scanName: ci.scanName, docType: ci.docType });
   }
   // Папка сканов: выбранная флажком «Выбрать куда сохранить» (сама «Archive_Scans» или «Archive_Scans» внутри неё),
   // иначе «Archive_Scans» в папке результатов (outDir), иначе — в папке со ссылками.
@@ -525,7 +525,6 @@
         if (outDir) { const p = await outDir.resolve(scanDir); if (p) scanRel = p.join('/'); }
         else if (linksDir) { const p = await linksDir.resolve(scanDir); if (p) scanRel = ['..', '..'].concat(p).join('/'); }
       } catch (e) { /* не вычислить */ }
-      if (scanRel === null) log(`Папка сканов «${scanDir.name}» лежит вне папки результатов — ссылки в Excel будут абсолютными: file://${scanAbs()}/…`);
     }
     return scanDir;
   }
@@ -537,18 +536,17 @@
   }
   // Ссылка из Excel на скан: result.xlsx в папке результатов -> «Archive_Scans/…»,
   // result.xlsx в yaarchive_debug/<время>/ -> «../../Archive_Scans/…».
+  // Локальный путь к папке «Archive_Scans» — всегда абсолютный (по умолчанию /Volumes/DATA/Archive_Scans/); столбец
+  // «Локальная Ссылка на страницу» = этот путь + имя файла графического образа, ссылка — file://…
   const scanAbs = () => ($('scanPath').value.trim() || DEFAULT_SCANS_PATH).replace(/\/+$/, '');
-  function scanHrefFor(name) {
-    if (scanRel === null) return `file://${scanAbs()}/${encodeURIComponent(name)}`;
-    if (typeof scanRel === 'string') return scanRel ? `${scanRel}/${name}` : name;
-    return outDir ? `${SCAN_DIR}/${name}` : `../../${SCAN_DIR}/${name}`;
-  }
+  const scanLocalFor = (name) => `${scanAbs()}/${name}`;
+  function scanHrefFor(name) { return `file://${encodeURI(scanAbs())}/${encodeURIComponent(name)}`; }
   // -> время, потраченное на скан (мс), чтобы сократить паузу между страницами
   async function saveScan(r, n) {
     const t0 = Date.now();
     const m = pageMeta[r.url];
     if (!m || !r.nextNode || !r.nextNode.id) return 0;
-    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanHref: scanHrefFor(m.scanName) });
+    const setFile = () => Object.assign(m, { scanFile: `${SCAN_DIR}/${m.scanName}`, scanLocal: scanLocalFor(m.scanName), scanHref: scanHrefFor(m.scanName) });
     if (await scanExists(m.scanName)) {
       scanStats.existed++; setFile();
       log(`  стр. ${n}: скан ${m.scanName} уже есть — пропущен.`);
@@ -1037,7 +1035,7 @@
       const ci = ExcelSheets.crumbInfo(known, u.page, null, 'https://ya.ru');
       if (!ci.scanName.startsWith('YA_archive_') && await scanExists(ci.scanName)) {
         scanStats.existed++;
-        dlMeta[u.clean] = { cga: ci.cga, scanName: ci.scanName, scanFile: `${SCAN_DIR}/${ci.scanName}`, scanHref: scanHrefFor(ci.scanName), err: '' };
+        dlMeta[u.clean] = { cga: ci.cga, docType: ci.docType, scanName: ci.scanName, scanFile: `${SCAN_DIR}/${ci.scanName}`, scanLocal: scanLocalFor(ci.scanName), scanHref: scanHrefFor(ci.scanName), err: '' };
         log(`${u.clean}: скан ${ci.scanName} уже есть — пропущен.`);
         progressStep(Date.now() - tPage);
         return false;
@@ -1055,7 +1053,7 @@
     noteMeta(r, u.page);
     const scanMs = await saveScan(r, u.page);
     const m = pageMeta[r.url] || {};
-    dlMeta[u.clean] = { cga: m.cga || '', scanName: m.scanName || '', scanFile: m.scanFile || '', scanHref: m.scanHref || '',
+    dlMeta[u.clean] = { cga: m.cga || '', docType: m.docType || '', scanName: m.scanName || '', scanFile: m.scanFile || '', scanLocal: m.scanLocal || '', scanHref: m.scanHref || '',
       err: m.scanFile ? '' : (m.scanErr || 'скан не сохранён') };
     progressStep(Date.now() - tPage);
     await sleep(Math.max(0, rand(CFG.DELAY) - scanMs));

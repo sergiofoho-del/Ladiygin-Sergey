@@ -44,12 +44,32 @@
   }
   const whereOf = (rec) => [rec.tag, rec.xref, rec.name && '— ' + rec.name].filter(Boolean).join(' ');
 
-  // -> [{url, where}] — все ссылки с доменами ya.ru и yandex.ru из значений .ged (в порядке следования)
+  // Персона, к которой относится запись: INDI — её имя; FAM — супруги (HUSB/WIFE); SOUR/NOTE/OBJE — персоны, которые на них ссылаются
+  function personsOf(recs) {
+    const byX = new Map(recs.filter((r) => r.xref).map((r) => [r.xref, r]));
+    const nameOf = (r) => r.name || (r.tag === 'INDI' ? r.xref : '');
+    const cited = new Map();
+    const cite = (ptr, who) => { if (!who) return; const a = cited.get(ptr) || []; if (!a.includes(who)) a.push(who); cited.set(ptr, a); };
+    for (const r of recs) {
+      if (r.tag !== 'INDI' && r.tag !== 'FAM') continue;
+      const who = r.tag === 'INDI' ? nameOf(r) : famNames(r);
+      for (const ln of r.lines) if (/^@[^@]+@$/.test(ln.value.trim()) && /^(SOUR|NOTE|OBJE)$/.test(ln.tag)) cite(ln.value.trim(), who);
+    }
+    function famNames(r) {
+      return r.lines.filter((ln) => /^(HUSB|WIFE)$/.test(ln.tag)).map((ln) => byX.get(ln.value.trim())).filter(Boolean).map(nameOf).filter(Boolean).join(' и ');
+    }
+    return (r) => (r.tag === 'INDI' ? nameOf(r) : r.tag === 'FAM' ? famNames(r) : (cited.get(r.xref) || []).join('; '));
+  }
+
+  // -> [{url, where, person}] — все ссылки с доменами ya.ru и yandex.ru из значений .ged (в порядке следования)
   function gedcomLinks(text) {
     const out = [];
-    for (const rec of gedcomRecords(text)) {
+    const recs = gedcomRecords(text);
+    const personOf = personsOf(recs);
+    for (const rec of recs) {
+      const person = personOf(rec);
       for (const ln of rec.lines) {
-        for (const m of ln.value.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: `${whereOf(rec)} (${ln.tag})` });
+        for (const m of ln.value.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: `${whereOf(rec)} (${ln.tag})`, person });
       }
     }
     return out;
@@ -104,7 +124,7 @@
     const seenUrl = new Set();
     for (const s of sources) {
       const url = s.url, p = parseArchiveUrl(url);
-      const e = { url, where: s.where || '', status: '', clean: '', pages: p.pages.length };
+      const e = { url, where: s.where || '', person: s.person || '', status: '', clean: '', pages: p.pages.length };
       entries.push(e);
       if (p.status !== 'ok') { e.status = 'пропущена: ' + p.reason; continue; }
       let fresh = 0;
@@ -112,18 +132,19 @@
         const key = `${p.fileId}:${n}`;
         let u = index.get(key);
         if (!u) {
-          u = { key, fileId: p.fileId, page: n, clean: cleanLink(p.fileId, n), origs: [], wheres: [] };
+          u = { key, fileId: p.fileId, page: n, clean: cleanLink(p.fileId, n), origs: [], wheres: [], persons: [] };
           index.set(key, u); unique.push(u); fresh++;
         }
         if (!u.origs.includes(url)) u.origs.push(url);
         if (s.where && !u.wheres.includes(s.where)) u.wheres.push(s.where);
+        if (s.person && !u.persons.includes(s.person)) u.persons.push(s.person);
       }
       e.clean = p.pages.length === 1 ? cleanLink(p.fileId, p.pages[0]) : `${cleanLink(p.fileId, p.pages[0])} … ${p.pages[p.pages.length - 1]}`;
       if (!fresh) e.status = seenUrl.has(url) ? 'дубликат (та же ссылка)' : 'дубликат (страница уже в списке)';
       else e.status = (p.pages.length > 1 ? `диапазон: ${p.pages.length} стр.` : 'страница') + (p.note ? `; ${p.note}` : '') + (fresh < p.pages.length ? `; новых ${fresh}` : '');
       seenUrl.add(url);
     }
-    return { unique, entries };
+    return { unique, entries, gedcom: sources.some((x) => 'person' in x) };
   }
 
   // Исправленный HTML-файл ссылок: по одной очищенной ссылке на страницу, без дубликатов и без «?center=»
@@ -134,23 +155,26 @@
       `<p>Страниц без повторов: ${plan.unique.length}</p>\n` + rows.join('\n') + '\n</body></html>\n';
   }
 
-  // Строки листов Excel. meta[clean] = {cga, scanFile, scanHref, scanName, err}
-  const HEAD_MAIN = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы'];
+  // Строки листов Excel. meta[clean] = {cga, docType, scanFile, scanHref, scanName, err}
+  // Для GEDCOM добавляется первый столбец «Имя персоны» (к какой персоне относится ссылка).
+  const HEAD_MAIN = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа'];
   const HEAD_ALL = ['Ссылка на страницу', 'Ссылка для скачивания', 'Статус', 'Где найдена'];
   function sheets(plan, meta) {
-    const main = [HEAD_MAIN], mainLinks = [];
+    const g = !!plan.gedcom, o = g ? 1 : 0;
+    const main = [(g ? ['Имя персоны'] : []).concat(HEAD_MAIN)], mainLinks = [];
     plan.unique.forEach((u) => {
       const m = meta[u.clean] || {};
       const r = main.length;
-      main.push([u.origs[0], m.scanFile ? m.scanName || m.scanFile : (m.err ? `не скачан: ${m.err}` : ''), m.cga || '']);
-      if (/^https?:/.test(u.origs[0])) mainLinks.push([r, 0, u.origs[0]]);
-      if (m.scanFile) mainLinks.push([r, 1, m.scanHref || m.scanFile]);
+      const row = [u.origs[0], m.scanFile ? m.scanLocal || m.scanName || m.scanFile : (m.err ? `не скачан: ${m.err}` : ''), m.cga || '', m.docType || ''];
+      main.push(g ? [(u.persons || []).join('; ')].concat(row) : row);
+      if (/^https?:/.test(u.origs[0])) mainLinks.push([r, o, u.origs[0]]);
+      if (m.scanFile) mainLinks.push([r, o + 1, m.scanHref || m.scanFile]);
     });
-    const all = [HEAD_ALL];
-    plan.entries.forEach((e) => all.push([e.url, e.clean, e.status, e.where]));
+    const all = [g ? ['Имя персоны'].concat(HEAD_ALL) : HEAD_ALL];
+    plan.entries.forEach((e) => all.push(g ? [e.person || ''].concat([e.url, e.clean, e.status, e.where]) : [e.url, e.clean, e.status, e.where]));
     const w = (rows, cap) => rows[0].map((_, c) => Math.min(cap, Math.max(12, ...rows.slice(0, 200).map((r) => String(r[c] || '').length)) + 2));
     return [
-      { name: 'Страницы', rows: main, widths: [70, 46, 42], links: mainLinks },
+      { name: 'Страницы', rows: main, widths: (g ? [28] : []).concat([70, 46, 42, 38]), links: mainLinks },
       { name: 'Все ссылки', rows: all, widths: w(all, 70) },
     ];
   }

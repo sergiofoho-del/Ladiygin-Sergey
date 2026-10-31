@@ -58,13 +58,28 @@ assert.strictEqual(L.decodeBytes(new TextEncoder().encode('0 HEAD')), '0 HEAD');
 assert.strictEqual(L.decodeBytes(Buffer.from([0xc8, 0xe2, 0xe0, 0xed])), 'Иван');   // windows-1251
 
 // 7. листы Excel
-const meta = { [plan.unique[0].clean]: { cga: 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', scanName: 'a.jpg', scanFile: 'Archive_Scans/a.jpg', scanHref: 'Archive_Scans/a.jpg' },
+const meta = { [plan.unique[0].clean]: { cga: 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', docType: 'Ревизская сказка от 1850 года', scanName: 'a.jpg', scanFile: 'Archive_Scans/a.jpg', scanLocal: '/Volumes/DATA/Archive_Scans/a.jpg', scanHref: 'file:///Volumes/DATA/Archive_Scans/a.jpg' },
   [plan.unique[1].clean]: { err: 'нет данных' } };
 const sh = L.sheets(plan, meta);
-assert.deepStrictEqual(sh[0].rows[0], ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы']);
-assert.deepStrictEqual(sh[0].rows[1].slice(1), ['a.jpg', 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165']);
+assert.deepStrictEqual(sh[0].rows[0], ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа']);
+assert.deepStrictEqual(sh[0].rows[1].slice(1), ['/Volumes/DATA/Archive_Scans/a.jpg', 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', 'Ревизская сказка от 1850 года']);
 assert.strictEqual(sh[0].rows[2][1], 'не скачан: нет данных');
 assert.strictEqual(sh[0].rows.length, 5);
 assert.deepStrictEqual(sh[0].links.map((l) => [l[0], l[1]]), [[1, 0], [1, 1], [2, 0], [3, 0], [4, 0]]);
 assert.strictEqual(sh[1].rows.length, 1 + 6);
+// 8. GEDCOM: «Имя персоны» (INDI — имя; FAM — супруги; SOUR — кто ссылается)
+const gedP = ['0 HEAD', '0 @I1@ INDI', '1 NAME Иван /Ладыгин/', '1 SOUR @S1@', '0 @I2@ INDI', '1 NAME Анна /Ладыгина/',
+  '1 NOTE https://ya.ru/archive/catalog/bfed2966-e671-4c18-bbb0-a9551ad28f8e/165', '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@',
+  '1 NOTE https://ya.ru/archive/catalog/3aa266f8-a0ed-434d-bd5d-c095d45efc1b/866', '0 @S1@ SOUR',
+  '1 TITL https://ya.ru/archive/catalog/3aa266f8-a0ed-434d-bd5d-c095d45efc1b/865', '0 TRLR'].join('\n');
+const glP = L.gedcomLinks(gedP);
+assert.deepStrictEqual(glP.map((x) => x.person), ['Анна Ладыгина', 'Иван Ладыгин и Анна Ладыгина', 'Иван Ладыгин']);
+const gpP = L.buildPlan(glP);
+assert.ok(gpP.gedcom);
+const gsP = L.sheets(gpP, {});
+assert.deepStrictEqual(gsP[0].rows[0], ['Имя персоны', 'Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа']);
+assert.strictEqual(gsP[0].rows[1][0], 'Анна Ладыгина');
+assert.strictEqual(gsP[0].links.filter((l) => l[1] === 1).length, 3);
+assert.strictEqual(gsP[1].rows[0][0], 'Имя персоны');
+assert.strictEqual(L.sheets(L.buildPlan(L.htmlLinks('<a href="https://ya.ru/archive/catalog/3aa266f8-a0ed-434d-bd5d-c095d45efc1b/865">x</a>')), {})[0].rows[0][0], 'Ссылка на страницу');
 console.log('links: OK');

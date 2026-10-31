@@ -81,8 +81,8 @@
       <div class="row">
         <button id="pickScanBtn">Выбрать папку «Archive_Scans» для сканов</button>
       </div>
-      <div class="note" id="scanNote">Папка сканов не выбрана — будет /Volumes/DATA/Archive_Scans</div>
-      <label>Путь к папке сканов для ссылок в Excel (нужен, если она не внутри папки результата):
+      <div class="note" id="scanNote">Папка сканов не выбрана — по умолчанию /Volumes/DATA/Archive_Scans/</div>
+      <label>Локальный путь к папке «Archive_Scans» (в столбце «Локальная Ссылка на страницу» — этот путь + имя файла графического образа):
         <input type="text" id="scanPath" value="/Volumes/DATA/Archive_Scans" spellcheck="false"></label>
       <div class="muted">Если файл скана уже существует, он пропускается. Браузер не может писать по строке пути, поэтому
         при первом запуске без выбранной папки расширение попросит указать /Volumes/DATA/Archive_Scans в окне выбора и запомнит её.</div>

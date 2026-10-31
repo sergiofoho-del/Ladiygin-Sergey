@@ -9,7 +9,7 @@
 // строки приводятся к виду «один человек» (текст блока делится по людям) или «строка таблицы».
 //
 // Постранично (2.3.0): у всех людей одной обработанной страницы одна ячейка «Год», «Ссылка на страницу»,
-// «Локальная Ссылка на страницу» (скан) и «Ссылка на ЦГА Москвы» — слитые; «Ссылка на ЦГА Москвы» — текст
+// «Локальная Ссылка на страницу» (скан) и «Архив хранения документа» — слитые; «Архив хранения документа» — текст
 // «ЦГА Москвы/Фонд 203/Опись 747/Дело 15/Скан 865» без ссылки.
 // Населённые пункты: «не определён (начало диапазона)» получает название следующего определённого НП того же года;
 // повторный НП в документе одного года переносится сразу после первичного (порядок первых упоминаний).
@@ -169,16 +169,16 @@
   }
 
   // ---------------------------------------------------------------- ссылки
-  const LINK_HEAD = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Ссылка на ЦГА Москвы'];
+  const LINK_HEAD = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа'];
 
   // три ячейки ссылок строки по адресу страницы
   function linkCells(url, meta) {
     const m = (meta && url && meta[url]) || {};
-    return [url || '', m.scanFile ? m.scanName || m.scanFile : '', m.cga || ''];
+    return [url || '', m.scanFile ? m.scanLocal || m.scanName || m.scanFile : '', m.cga || ''];
   }
 
   // Постранично: строки одной обработанной страницы (год + ссылка) — одна слитая ячейка «Год» и три ячейки ссылок.
-  // «Ссылка на ЦГА Москвы» — текст без ссылки. -> merges, links, pageRun (номер блока страницы по строкам)
+  // «Архив хранения документа» — текст без ссылки. -> merges, links, pageRun (номер блока страницы по строкам)
   function pageLayout(rows, firstCol, meta, yearCol) {
     const merges = [], links = [];
     const n = rows.length;
@@ -324,6 +324,27 @@
   // ---------------------------------------------------------------- сведения о странице
   // Путь из шапки страницы и имя файла скана — по breadcrumbs данных страницы (как в Scrpt_YA_Orig_Scan).
   const sanitize = (v) => String(v || '').replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  // Тип документа по названию дела: «Ревизская сказка от 1850 года», «Исповедническая ведомость 1750 года»,
+  // «Исповедническая записная книга», «Метрическая книга 1820 года». Год — из названия; для ревизий без года — по номеру ревизии.
+  function docType(crumbs) {
+    const list = crumbs || [];
+    const file = list.find((c) => c.type === 'File');
+    const name = file ? String(file.name || '').replace(/\s+/g, ' ').trim() : '';
+    if (!name) return '';
+    const yearIn = (t) => { const m = String(t || '').match(/(?:^|\D)(1[5-9]\d\d)(?!\d)/); return m ? m[1] : ''; };
+    let year = yearIn(name);
+    if (!year) for (const c of list) { if (c.type !== 'File') { year = yearIn(c.name); if (year) break; } }
+    if (/ревиз/i.test(name)) {
+      const rv = name.match(/(\d{1,2})\s*-?\s*(?:я|ая|й)?\s*ревиз/i);
+      if (!year && rv && REVISION_YEARS[+rv[1] - 1]) year = String(REVISION_YEARS[+rv[1] - 1]);
+      return 'Ревизская сказка' + (year ? ` от ${year} года` : '');
+    }
+    if (/метрич/i.test(name)) return 'Метрическая книга' + (year ? ` ${year} года` : '');
+    if (/исповед/i.test(name)) {
+      return (/записн|книг/i.test(name) && !/ведомост/i.test(name) ? 'Исповедническая записная книга' : 'Исповедническая ведомость') + (year ? ` ${year} года` : '');
+    }
+    return name + (year && !name.includes(year) ? ` ${year} года` : '');
+  }
   function crumbInfo(crumbs, page, nodeId, origin) {
     const find = (t) => (crumbs || []).find((c) => c.type === t) || null;
     const archive = find('Archive'), fund = find('Fund'), inv = find('Inventory'), file = find('File');
@@ -341,10 +362,10 @@
     const scanName = codes.length >= 2
       ? (archive && archive.name ? sanitize(archive.name) + '_[ЯА]_' : '') + sanitize(codes.join('-') + '-' + padded) + '.jpg'
       : 'YA_archive_' + sanitize(nodeId) + '_' + padded + '.jpg';
-    return { cga: (crumbs && crumbs.length) ? parts.join('/') : '', cgaUrl, scanName };
+    return { cga: (crumbs && crumbs.length) ? parts.join('/') : '', cgaUrl, scanName, docType: docType(crumbs) };
   }
 
-  const api = { build, crumbInfo, arrangeSettlements, settlementColor, COLORS, revisionToPersons, personsToRevisionRows, birthYear, widthsFor, LINK_HEAD };
+  const api = { build, crumbInfo, docType, arrangeSettlements, settlementColor, COLORS, revisionToPersons, personsToRevisionRows, birthYear, widthsFor, LINK_HEAD };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ExcelSheets = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
