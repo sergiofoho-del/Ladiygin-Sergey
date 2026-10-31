@@ -49,7 +49,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -85,6 +85,7 @@ def _name_sex_ctx(tok, nxt, prv):
 
 SN.name_sex = _name_sex_cached
 DEBUG_DIR, SCAN_DIR, OUT_DIR = "yaarchive_debug", "Archive_Scans", "Итог"
+DEFAULT_SCANS = "/Volumes/DATA/Archive_Scans"        # папка сканов по умолчанию (как в расширении)
 XLSX, GED, JSONF, REPORT = "Итог_люди.xlsx", "Итог_древо.ged", "Итог_люди.json", "Отчёт.txt"
 KIND_CONF, KIND_REV = "confession", "revision"
 KIND_RU = {KIND_CONF: "Исповедная ведомость", KIND_REV: "Ревизская сказка"}
@@ -422,7 +423,7 @@ def crumb_info(crumbs, page, node_id, origin="https://ya.ru"):
 
 
 def scan_index(roots, extra):
-    dirs = [Path(d) for d in extra or []]
+    dirs = [Path(d) for d in extra or []] + [Path(DEFAULT_SCANS)]     # как в расширении 2.7.0+: /Volumes/DATA/Archive_Scans
     for root in roots:
         base = Path(root)
         for d in [base] + list(base.parents)[:2]:
