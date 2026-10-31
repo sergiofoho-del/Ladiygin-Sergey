@@ -31,6 +31,7 @@
       if (level === 0) {
         rec = { xref, tag, name: '', lines: [] };
         recs.push(rec); last = null;
+        if (value) { last = { level: 0, tag, value }; rec.lines.push(last); }   // значение в самой строке записи (0 @N1@ NOTE текст)
         continue;
       }
       if (!rec) continue;
@@ -61,15 +62,29 @@
     return (r) => (r.tag === 'INDI' ? nameOf(r) : r.tag === 'FAM' ? famNames(r) : (cited.get(r.xref) || []).join('; '));
   }
 
-  // -> [{url, where, person}] — все ссылки с доменами ya.ru и yandex.ru из значений .ged (в порядке следования)
+  // Номера (xref) персон INDI, к которым относится запись: INDI — она сама; FAM — супруги; SOUR/NOTE/OBJE — те, кто на них ссылается
+  function xrefsOf(recs) {
+    const byX = new Map(recs.filter((r) => r.xref).map((r) => [r.xref, r]));
+    const cited = new Map();
+    const add = (ptr, x) => { const a = cited.get(ptr) || []; if (!a.includes(x)) a.push(x); cited.set(ptr, a); };
+    const own = (r) => (r.tag === 'INDI' ? [r.xref] : r.tag === 'FAM'
+      ? r.lines.filter((ln) => /^(HUSB|WIFE)$/.test(ln.tag)).map((ln) => ln.value.trim()).filter((x) => byX.get(x) && byX.get(x).tag === 'INDI') : []);
+    for (const r of recs) {
+      if (r.tag !== 'INDI' && r.tag !== 'FAM') continue;
+      for (const ln of r.lines) if (/^@[^@]+@$/.test(ln.value.trim()) && /^(SOUR|NOTE|OBJE)$/.test(ln.tag)) own(r).forEach((x) => add(ln.value.trim(), x));
+    }
+    return (r) => (r.tag === 'INDI' || r.tag === 'FAM' ? own(r) : (cited.get(r.xref) || []));
+  }
+
+  // -> [{url, where, person, xrefs}] — все ссылки с доменами ya.ru и yandex.ru из значений .ged (в порядке следования)
   function gedcomLinks(text) {
     const out = [];
     const recs = gedcomRecords(text);
-    const personOf = personsOf(recs);
+    const personOf = personsOf(recs), xrefOf = xrefsOf(recs);
     for (const rec of recs) {
-      const person = personOf(rec);
+      const person = personOf(rec), xrefs = xrefOf(rec);
       for (const ln of rec.lines) {
-        for (const m of ln.value.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: `${whereOf(rec)} (${ln.tag})`, person });
+        for (const m of ln.value.matchAll(URL_RX)) out.push({ url: cleanUrl(m[0]), where: `${whereOf(rec)} (${ln.tag})`, person, xrefs });
       }
     }
     return out;
@@ -132,12 +147,13 @@
         const key = `${p.fileId}:${n}`;
         let u = index.get(key);
         if (!u) {
-          u = { key, fileId: p.fileId, page: n, clean: cleanLink(p.fileId, n), origs: [], wheres: [], persons: [] };
+          u = { key, fileId: p.fileId, page: n, clean: cleanLink(p.fileId, n), origs: [], wheres: [], persons: [], xrefs: [] };
           index.set(key, u); unique.push(u); fresh++;
         }
         if (!u.origs.includes(url)) u.origs.push(url);
         if (s.where && !u.wheres.includes(s.where)) u.wheres.push(s.where);
         if (s.person && !u.persons.includes(s.person)) u.persons.push(s.person);
+        (s.xrefs || []).forEach((x) => { if (!u.xrefs.includes(x)) u.xrefs.push(x); });
       }
       e.clean = p.pages.length === 1 ? cleanLink(p.fileId, p.pages[0]) : `${cleanLink(p.fileId, p.pages[0])} … ${p.pages[p.pages.length - 1]}`;
       if (!fresh) e.status = seenUrl.has(url) ? 'дубликат (та же ссылка)' : 'дубликат (страница уже в списке)';

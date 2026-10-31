@@ -177,6 +177,8 @@ with sync_playwright() as p:
         qid = '#qOrig' if scenario == 'links' else '#qLow'
         app.click('#startBtn'); app.wait_for_timeout(500)
         ui0['no_quality_status'] = app.inner_text('#status')       # качество не выбрано — запуск не начинается
+        if scenario == 'links':      # навык «Запись в GEDCOM»: раздел виден только для .ged; вариант «Источник», в копию
+            ui0['ged_visible'] = app.is_visible('#gedBox'); app.check('#gedWrite')
         app.check(qid); ui0['qNote'] = app.inner_text('#qNote'); ui0['outNote'] = app.inner_text('#outNote'); ui0['srcNote'] = app.inner_text('#srcNote')
         ui0['checks_reset'] = [app.is_checked(x) for x in ('#useDefaults', '#qMid', '#saveScans')]
         app.click('#startBtn')
@@ -200,7 +202,13 @@ with sync_playwright() as p:
         print(rows)
         ok = status.startswith('Готово') and rows[0] == ((['Имя персоны'] if scenario == 'links' else []) + ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа'])
         ok &= ui0['images_checked'] and not ui0['excel_view_visible'] and not ui0['calib_visible']
-        ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки', 'Куда сохранить', 'Качество скана', 'Настройки']
+        ged_legend = ['Запись сканов в GEDCOM'] if scenario == 'links' else []
+        ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки'] + ged_legend + ['Куда сохранить', 'Качество скана', 'Настройки']
+        if scenario == 'links':
+            g = (dl / 'проект_со_сканами.ged').read_text(encoding='utf-8')
+            print(g)
+            ok &= ui0['ged_visible'] and 'проект_со_сканами.ged' in names and g.count(' SOUR\n') == 4 and '1 SOUR @YA_S1@' in g
+            ok &= all('2 FILE /Volumes/DATA/Archive_Scans/' in g for _ in [0]) and g.count('0 @YA_S') == 4 and 'GEDCOM: записано' in (dl / 'links_run_log.txt').read_text(encoding='utf-8')
         ok &= len(rows) == 1 + 4                      # 865, 866, 867 (дело A) и 165 (дело B); без дублей, без «дела целиком»
         ok &= ui0['no_quality_status'].startswith('Отметьте качество') and (('Оригинальное' if scenario == 'links' else 'Низкое') in ui0['qNote'])
         ok &= ui0['checks_reset'] == [False, False, False] and ui0['outNote'].endswith('«out»')

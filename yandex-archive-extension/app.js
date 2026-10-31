@@ -110,7 +110,7 @@
 
   function setRunningUi(on) {
     $('startBtn').disabled = on;
-    ['pickFileBtn', 'pickOutBtn', 'pickScanBtn', 'useDefaults', 'scanPath', 'qOrig', 'qMid', 'qLow'].forEach((id) => { $(id).disabled = on; });
+    ['pickFileBtn', 'pickOutBtn', 'pickScanBtn', 'useDefaults', 'scanPath', 'qOrig', 'qMid', 'qLow', 'gedWrite', 'gedSource', 'gedMedia', 'gedCopy', 'gedOrig'].forEach((id) => { $(id).disabled = on; });
     document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = on; });
     $('outFormat').disabled = on;
     $('saveScans').disabled = on;
@@ -186,9 +186,18 @@
     note('scanNote', scanPicked
       ? `Сканы сохраняются в: «${scanPicked.name === SCAN_DIR ? scanPicked.name : scanPicked.name + '/' + SCAN_DIR}»`
       : `Папка сканов не выбрана — по умолчанию ${DEFAULT_SCANS_PATH}`);
+    const isGed = linksKind === 'ged' && imagesMode();
+    $('gedBox').hidden = !isGed;
+    if (isGed) {
+      $('gedOpts').style.display = $('gedWrite').checked ? '' : 'none';
+      note('gedNote', $('gedWrite').checked
+        ? `После скачивания: ${$('gedMedia').checked ? 'общий медиа-объект' : 'источник'}; ${$('gedOrig').checked ? 'в исходный файл (копия до сканов — рядом)' : 'в копию _со_сканами.ged'}`
+        : 'Запись в GEDCOM не включена — файл .ged останется как есть');
+    }
     const q = scanQualityId();
     note('qNote', q ? `Качество скана: «${QUALITY[q].label}» — ${QUALITY[q].percent}%` : 'Качество не выбрано');
   }
+  ['gedWrite', 'gedSource', 'gedMedia', 'gedCopy', 'gedOrig'].forEach((id) => $(id).addEventListener('change', showNotes));
   function scanQualityId() { return Object.keys(QUALITY).find((id) => $(id).checked) || null; }
   ['qOrig', 'qMid', 'qLow'].forEach((id) => $(id).addEventListener('change', () => {
     if ($(id).checked) Object.keys(QUALITY).forEach((o) => { if (o !== id) $(o).checked = false; });   // один из трёх
@@ -1001,6 +1010,15 @@
     await ensureScansDir();
     if (!(await dirPermission(outPicked, true))) { setStatus(`Нет доступа к папке «${outPicked.name}» — выберите её заново.`); return; }
     linksDir = null;
+    gedRun = null;
+    if (linksKind === 'ged' && $('gedWrite').checked) {
+      gedRun = { variant: $('gedMedia').checked ? 'media' : 'source', toOrig: $('gedOrig').checked };
+      if (gedRun.toOrig) {
+        let ok = false;
+        try { ok = (await srcFile.queryPermission({ mode: 'readwrite' })) === 'granted' || (await srcFile.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch (e) { /* нет права */ }
+        if (!ok) { setStatus('Нет права записи в исходный .ged — выберите «В копию» или разрешите запись.'); return; }
+      }
+    }
     await runDownload(outPicked);
   }
 
@@ -1009,6 +1027,7 @@
   // Источник: файл .ged или .html (тип определяется по расширению). Все ссылки приводятся к ya.ru/archive/catalog/<дело>/<страница>,
   // дубликаты удаляются, для каждой страницы сохраняется скан (тот же модуль, что «Сохранить Графические сканы?»).
   let dlRunPlan = null;      // план текущего запуска
+  let gedRun = null;         // запись в GEDCOM: {variant:'source'|'media', toOrig}
   let dlMeta = {};           // ссылка страницы -> {cga, scanName, scanFile, scanHref, err}
 
   async function writeDl(name, blob) {
@@ -1060,6 +1079,29 @@
     return true;
   }
 
+  // навык «Запись в GEDCOM»: ссылки на сохранённые сканы -> в .ged (копия или исходный файл с копией «до сканов»)
+  async function writeGedcom(dir, plan) {
+    const name = srcFile.name.replace(/\.ged$/i, '');
+    try {
+      const r = GedcomWriter.apply(linksText, plan, dlMeta, gedRun.variant);
+      const st = r.stats;
+      if (!st.pages) { log(`GEDCOM: записывать нечего — сканов с персонами нет (без скана ${st.noScan}, без персоны ${st.noPerson}).`); return; }
+      const put = async (handle, blob) => { const w = await handle.createWritable(); await w.write(blob); await w.close(); };
+      const bytes = new TextEncoder().encode(r.text);
+      if (gedRun.toOrig) {
+        const f = await srcFile.getFile();
+        await put(await dir.getFileHandle(`${name}_до_сканов.ged`, { create: true }), f);
+        await put(srcFile, new Blob([bytes], { type: 'text/plain' }));
+        log(`GEDCOM: записано в исходный файл «${srcFile.name}»; прежний сохранён: «${dir.name}/${name}_до_сканов.ged».`);
+      } else {
+        await put(await dir.getFileHandle(`${name}_со_сканами.ged`, { create: true }), new Blob([bytes], { type: 'text/plain' }));
+        log(`GEDCOM: записано в «${dir.name}/${name}_со_сканами.ged».`);
+      }
+      log(`GEDCOM (${gedRun.variant === 'media' ? 'общий медиа-объект' : 'источник'}): страниц ${st.pages}, ссылок у персон ${st.links}, персон ${st.persons}; ` +
+        `без скана ${st.noScan}, без персоны ${st.noPerson}${st.removed ? `; прежних записей навыка заменено ${st.removed}` : ''}. Кодировка файла — UTF-8.`);
+    } catch (e) { log('GEDCOM: не удалось записать — ' + (e && e.message)); }
+  }
+
   async function runDownload(dir) {
     running = true; stopRequested = false; dlMode = true;
     outDir = dir; fileHandle = null; debugSaved = true;
@@ -1097,6 +1139,7 @@
       log(`Сканы: сохранено ${scanStats.saved} (${Math.round(scanStats.bytes / 1048576)} МБ), уже были ${scanStats.existed}, не удалось ${scanStats.failed}. Папка: «${scanDir ? scanDir.name : dir.name + '/' + SCAN_DIR}».`);
       if (bad.length) log(`ВНИМАНИЕ: без скана осталось ${bad.length}: ${bad.map((u) => u.clean).join('; ')}`);
       try { await saveLinksResult(true); } catch (e) { log('Не удалось сохранить Excel: ' + e.message); }
+      if (gedRun) await writeGedcom(dir, plan);
       if (workTabId !== null) { chrome.tabs.remove(workTabId).catch(() => {}); workTabId = null; }
       const done = plan.unique.length - bad.length;
       running = false; dlMode = false;
@@ -1113,7 +1156,7 @@
     await loadSettings();
     applyModeUi();
     showSelectors();
-    ['useDefaults', 'qOrig', 'qMid', 'qLow', 'saveScans', 'showTab'].forEach((id) => { $(id).checked = false; });
+    ['useDefaults', 'qOrig', 'qMid', 'qLow', 'saveScans', 'showTab', 'gedWrite', 'gedOrig'].forEach((id) => { $(id).checked = false; });
     try { const cur = await chrome.tabs.getCurrent(); appTabId = cur ? cur.id : null; } catch (e) { /* ignore */ }
     // флажки и выбор файла/папок при запуске сброшены: всё выбирается вручную (или флажком «Использовать умолчания»)
     showNotes();
