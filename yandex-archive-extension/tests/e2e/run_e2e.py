@@ -251,6 +251,21 @@ with sync_playwright() as p:
 
         app.wait_for_timeout(500)
     app.wait_for_timeout(3000)
+    t1 = time.time()      # итоговая обработка (движок yaarchive в Pyodide) идёт после «Готово»
+    while time.time() - t1 < 180 and not re.match(r'(Готово: людей|Итоговая обработка не выполнена|Пакетов с данными)', app.inner_text('#engNote')):
+        app.wait_for_timeout(500)
+    ui['engNote'] = app.inner_text('#engNote'); ui['fixCount'] = app.inner_text('#fixCount')
+    # окно «Исправление ошибок»: решение «да» по первому предложению -> применяется, итог пересчитан
+    ui['fix_before'] = app.locator('#fixList .fix').count()
+    if ui['fix_before']:
+        app.select_option('#fixList .fix >> nth=0 >> select', 'да')
+        app.select_option('#fixList .fix >> nth=1 >> select', 'нет')
+        app.evaluate("document.getElementById('engNote').textContent = ''")
+        app.click('#fixApply')
+        t2 = time.time()
+        while time.time() - t2 < 120 and not app.inner_text('#engNote'):
+            app.wait_for_timeout(500)
+        ui['fix_after'] = app.locator('#fixList .fix').count(); ui['engNote2'] = app.inner_text('#engNote')
     ui['status'] = app.inner_text('#status')
     ui['progress'] = prog
     ui['log'] = app.inner_text('#log')
@@ -264,7 +279,7 @@ print(json.dumps({'files': files, 'stats': stats, 'progress': prog[-3:], 'status
 
 # проверки
 ok = ui['status'].startswith('Готово') and stats['grant'] == stats['img'] == stats['token_ok'] > 0
-xl = [f for f in (out / 'downloads').rglob('*') if f.suffix in ('.xlsx',)]
+xl = [f for f in (out / 'downloads').rglob('*') if f.suffix in ('.xlsx',) and 'Итог' not in f.parts]
 if xl:
     from openpyxl import load_workbook
     ws = load_workbook(xl[0])['Люди']
@@ -276,5 +291,14 @@ if xl:
     ok &= want in head
 else:
     ok = False
+# встроенный движок: «Итог/» создан внутри расширения (без Терминала)
+itog = out / 'downloads' / 'Итог'
+need = ['Итог_люди.xlsx', 'Итог_древо.ged', 'Итог_люди.json', 'Отчёт.txt']
+ok &= all((itog / n).is_file() and (itog / n).stat().st_size > 0 for n in need) and ui['engNote'].startswith('Готово: людей')
+if (itog / 'Итог_древо.ged').is_file():
+    ok &= (itog / 'Итог_древо.ged').read_text(encoding='utf-8').rstrip().endswith('0 TRLR')
+if scenario.startswith('conf'):      # исповедные: есть предложения — окно решений работает
+    ok &= (itog / 'исправления.json').is_file() and ui.get('fix_before', 0) >= 2 and ui.get('fix_after', 99) <= ui.get('fix_before', 0) - 2 and ui.get('engNote2', '').startswith('Готово: людей')
+print('engine:', ui.get('engNote'), ui.get('fixCount'), 'исправления: было', ui.get('fix_before'), 'стало', ui.get('fix_after'))
 print('E2E', scenario, 'OK' if ok else 'ОШИБКА')
 sys.exit(0 if ok else 1)

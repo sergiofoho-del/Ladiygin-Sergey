@@ -961,6 +961,7 @@
       log(`Готово. Дворов: ${families.length}. Результаты: ${outLabel()}`);
       saveOut('run_log.txt', new Blob([$('log').textContent], { type: 'text/plain;charset=utf-8' }));
       try { await writeChain; } catch (e) { /* ошибки уже в журнале */ }
+      if ($('engAuto').checked && debugIndex.length && (outDir || linksDir)) await engineRun(outDir || linksDir, false);
     }
   }
 
@@ -1152,6 +1153,133 @@
       try { await writeChain; } catch (e) { /* ошибки уже в журнале */ }
     }
   }
+
+  // ------------------------------------------------------------- итоговая обработка (общий скрипт yaarchive, встроен в расширение)
+  let engWorker = null, engSeq = 0, engBusy = false, engProps = [];
+  const engPending = new Map();
+  function engineCall(msg, transfer) {
+    return new Promise((resolve, reject) => {
+      if (!engWorker) {
+        engWorker = new Worker('engine-worker.js');
+        engWorker.onmessage = (ev) => {
+          const m = ev.data;
+          if (m.type === 'log') { log('  ' + m.text); return; }
+          const p = engPending.get(m.id);
+          if (!p) return;
+          engPending.delete(m.id);
+          if (m.type === 'error') p.reject(new Error(m.message)); else p.resolve(m);
+        };
+        engWorker.onerror = (e) => { for (const p of engPending.values()) p.reject(new Error(e.message || 'ошибка воркера')); engPending.clear(); };
+      }
+      const id = ++engSeq;
+      engPending.set(id, { resolve, reject });
+      engWorker.postMessage({ ...msg, id }, transfer || []);
+    });
+  }
+  async function readAll(dirH, rel, out, pick) {
+    for await (const [name, h] of dirH.entries()) {
+      const r = rel ? rel + '/' + name : name;
+      if (h.kind === 'directory') await readAll(h, r, out, pick);
+      else if (pick(r)) out.push({ path: r, data: await (await h.getFile()).arrayBuffer() });
+    }
+  }
+  // что нужно движку из папки результата: данные страниц пакетов, итоговые файлы прошлого запуска и свои справочники
+  async function engineInputs(dir) {
+    const files = [];
+    try { const f = await (await dir.getFileHandle('справочники.json')).getFile(); files.push({ path: 'справочники.json', data: await f.arrayBuffer() }); } catch (e) { /* нет */ }
+    try {
+      const dbg = await dir.getDirectoryHandle('yaarchive_debug');
+      await readAll(dbg, 'yaarchive_debug', files, (r) => /_next_data\.json$|\/run_summary\.json$/.test(r));
+    } catch (e) { /* пакетов нет */ }
+    try { await readAll(await dir.getDirectoryHandle('Итог'), 'Итог', files, () => true); } catch (e) { /* первый запуск */ }
+    return files;
+  }
+  async function writeFileAt(dir, path, data) {
+    const parts = path.split('/');
+    let d = dir;
+    for (const p of parts.slice(0, -1)) d = await d.getDirectoryHandle(p, { create: true });
+    const w = await (await d.getFileHandle(parts[parts.length - 1], { create: true })).createWritable();
+    await w.write(data);
+    await w.close();
+  }
+  // имена сканов из «Archive_Scans» (для ссылок на сканы в итоге); без папки — ссылок на сканы нет
+  async function engineScanNames(ask) {
+    let h = scanDir || null;
+    if (!h && scanPicked && (await dirPermission(scanPicked, ask))) {
+      h = scanPicked.name === SCAN_DIR ? scanPicked : await scanPicked.getDirectoryHandle(SCAN_DIR).catch(() => scanPicked);
+    }
+    if (!h) { try { const d = await idb((st) => st.get('scansDefault')); if (d && (await dirPermission(d, ask))) h = d; } catch (e) { /* нет */ } }
+    if (!h) return null;
+    const base = scanAbs(), names = {};
+    for await (const [name, e] of h.entries()) if (e.kind === 'file' && /\.jpe?g$/i.test(name)) names[name] = base + '/' + name;
+    return names;
+  }
+  async function engineRun(dir, ask) {
+    if (engBusy) return;
+    engBusy = true;
+    $('engBtn').disabled = true;
+    $('engNote').textContent = 'Итоговая обработка… (первый запуск загружает движок, до минуты)';
+    try {
+      log('Итоговая обработка (общий скрипт yaarchive, встроен в расширение)…');
+      const files = await engineInputs(dir);
+      const scanNames = await engineScanNames(ask);
+      const m = await engineCall({ cmd: 'run', files, scanNames, scansPublic: scanAbs() }, files.map((f) => f.data));
+      await engineFinish(dir, m);
+    } catch (e) {
+      log('ОШИБКА итоговой обработки: ' + (e && e.message ? e.message : e));
+      $('engNote').textContent = 'Итоговая обработка не выполнена: ' + (e && e.message ? e.message : e);
+    } finally { engBusy = false; $('engBtn').disabled = false; }
+  }
+  async function engineFinish(dir, m) {
+    for (const f of m.files) await writeFileAt(dir, f.path, f.data);
+    const r = m.result;
+    engProps = r.proposals || [];
+    $('engNote').textContent = r.pages ? `Готово: людей ${r.people}, документов ${r.docs}, семей в GEDCOM ${r.fams}. Файлы — в «${dir.name}/Итог/».`
+      : 'Пакетов с данными страниц в этой папке нет — сначала выполните обработку.';
+    log(r.pages ? `Итог записан в «${dir.name}/Итог/»: ${r.files.join(', ')}.` : 'Итоговая обработка: пакетов с данными нет.');
+    showProposals();
+  }
+  function showProposals() {
+    const list = $('fixList');
+    list.textContent = '';
+    $('fixBox').hidden = !engProps.length;
+    $('fixCount').textContent = engProps.length ? `— ${engProps.length}` : '';
+    for (const p of engProps) {
+      const d = document.createElement('div');
+      d.className = 'fix'; d.dataset.id = p.id;
+      const t = document.createElement('div'); t.className = 't'; t.textContent = `${p.type} — ${p.where || ''}`;
+      const c = document.createElement('div'); c.textContent = `${p.now == null ? '' : p.now} → ${p.new == null ? '' : p.new}${p.reason ? ' · ' + p.reason : ''}`;
+      const s = document.createElement('select');
+      [['', 'пропустить'], ['да', 'да — исправить'], ['нет', 'нет — больше не предлагать']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; s.appendChild(o); });
+      d.append(t, c);
+      if (p.url) { const a = document.createElement('a'); a.href = p.url; a.target = '_blank'; a.rel = 'noreferrer'; a.textContent = 'страница в Яндекс Архиве'; d.append(a, document.createElement('br')); }
+      d.append(s);
+      list.appendChild(d);
+    }
+  }
+  async function engineApply() {
+    const dir = outDir || outPicked;
+    const decisions = [...document.querySelectorAll('#fixList .fix')].map((d) => ({ id: d.dataset.id, decision: d.querySelector('select').value })).filter((x) => x.decision);
+    if (!decisions.length) { $('engNote').textContent = 'Выберите «да» или «нет» хотя бы для одного предложения.'; return; }
+    if (!dir || engBusy) return;
+    engBusy = true; $('fixApply').disabled = true;
+    try {
+      const m = await engineCall({ cmd: 'decide', decisions, scanNames: await engineScanNames(true), scansPublic: scanAbs() });
+      await engineFinish(dir, m);
+    } catch (e) { log('ОШИБКА применения решений: ' + (e && e.message ? e.message : e)); $('engNote').textContent = 'Решения не применены: ' + e.message; }
+    finally { engBusy = false; $('fixApply').disabled = false; }
+  }
+  $('engBtn').addEventListener('click', async () => {
+    if (running) return;
+    if (!outPicked) { $('engNote').textContent = 'Выберите, куда сохранить результат («Выбрать куда сохранить результат»).'; return; }
+    if (!(await dirPermission(outPicked, true))) { $('engNote').textContent = `Нет доступа к папке «${outPicked.name}».`; return; }
+    await engineRun(outPicked, true);
+  });
+  $('fixApply').addEventListener('click', engineApply);
+  const fixAll = (v) => document.querySelectorAll('#fixList select').forEach((s) => { s.value = v; });
+  $('fixYes').addEventListener('click', () => fixAll('да'));
+  $('fixNo').addEventListener('click', () => fixAll('нет'));
+  $('fixSkip').addEventListener('click', () => fixAll(''));
 
   // ------------------------------------------------------------- старт
   (async () => {

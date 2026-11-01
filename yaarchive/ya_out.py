@@ -2,6 +2,7 @@
 yaarchive: запись итога — Итог_люди.xlsx, Итог_древо.ged (GEDCOM 5.5.1), Итог_люди.json, Отчёт.txt
 и снимок значений (по нему навык «Исправление ошибок» находит ваши ручные правки в Excel).
 """
+from urllib.parse import unquote
 import datetime
 import json
 import re
@@ -183,7 +184,8 @@ def write_excel(ctx, od, KIND_RU, version):
             c.value, c.hyperlink, c.font = f"стр. {p['page']}", p["url"], LINK
         if p["scan_link"]:
             c = ws.cell(r, ci["scan_link"])
-            c.value, c.hyperlink, c.font = Path(p["scan_link"]).name, p["scan_link"], LINK
+            lk = p["scan_link"]
+            c.value, c.hyperlink, c.font = (unquote(lk[7:]) if lk.startswith("file://") else Path(lk).name), lk, LINK
 
     def merge_runs(col, key):
         st = 0

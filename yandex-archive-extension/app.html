@@ -27,6 +27,9 @@
     .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
     code { font: 12.5px ui-monospace, Menlo, monospace; word-break: break-all; }
     #banner { display: none; border: 1px solid #d97706; background: #f59e0b22; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+    #fixList .fix { border: 1px solid #8884; border-radius: 6px; padding: 6px 10px; margin: 6px 0; font-size: 13px; }
+    #fixList .fix select { font: inherit; margin-top: 4px; }
+    #fixList .fix .t { font-weight: 600; }
     #status { font-weight: 600; margin: 12px 0 4px; }
     .toggle { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; margin: 8px 0; }
     .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -147,6 +150,25 @@
     <label style="margin-top:10px"><input type="checkbox" id="saveScans"> <b>Сохранить Графические сканы?</b> — применить навык «Сохранить Скан» (Scrpt_YA_Orig_Scan)</label>
     <div class="muted">Оригинал скана каждой страницы (JPG, качество 40%, размер в пикселях как у оригинала) сохраняется в папку
       «Archive_Scans» (раздел «Куда сохранить»). В Excel — столбец «Локальная Ссылка на страницу».</div>
+  </fieldset>
+
+  <fieldset data-only="confession revision">
+    <legend>Итоговая обработка (общий скрипт yaarchive)</legend>
+    <label><input type="checkbox" id="engAuto" checked> <b>После запуска выполнить итоговую обработку</b> — единая таблица людей, родство, дворы, годы рождения, GEDCOM и предложения исправлений</label>
+    <div class="muted">Общий скрипт yaarchive встроен в расширение и работает внутри него (Python в WebAssembly): Терминал и установка Python не нужны.
+      В папке результата создаётся «Итог/»: <code>Итог_люди.xlsx</code>, <code>Итог_древо.ged</code>, <code>Итог_люди.json</code>, <code>Отчёт.txt</code>. Навык «Исправление ошибок» предлагает правки — решения принимаются в окне ниже.</div>
+    <div class="row">
+      <button id="engBtn">Выполнить итоговую обработку папки результата сейчас</button>
+    </div>
+    <div class="note" id="engNote"></div>
+    <div id="fixBox" hidden>
+      <div><b>Предложения исправлений</b> <span class="muted" id="fixCount"></span></div>
+      <div class="row" style="margin-top:4px">
+        <button id="fixYes">Да — всем</button><button id="fixNo">Нет — всем</button><button id="fixSkip">Сбросить выбор</button>
+        <button id="fixApply" class="primary">Применить решения</button>
+      </div>
+      <div id="fixList"></div>
+    </div>
   </fieldset>
 
   <fieldset>
