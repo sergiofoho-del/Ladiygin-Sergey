@@ -196,12 +196,12 @@ with sync_playwright() as p:
         ui0['pick_log'] = app.evaluate('window.__pickLog')
         ctx.close()
         print(json.dumps({'ui': ui0, 'status': status, 'files': names, 'scans': scan_names, 'stats': stats}, ensure_ascii=False, indent=1))
-        from openpyxl import load_workbook
-        wb = load_workbook(dl / 'result_links.xlsx')
-        ws = wb['Страницы']
-        rows = [[c.value for c in r] for r in ws.iter_rows()]
+        import csv
+        raw = (dl / 'result_links.csv').read_bytes()
+        assert raw.startswith(b'\xef\xbb\xbf'), 'CSV должен быть UTF-8 с BOM'
+        rows = list(csv.reader(raw.decode('utf-8-sig').splitlines(), delimiter=';'))
         print(rows)
-        ok = status.startswith('Готово') and rows[0] == ((['Имя персоны'] if scenario == 'links' else []) + ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа'])
+        ok = status.startswith('Готово') and rows[0] == ((['ID персоны (INDI)', 'Имя персоны'] if scenario == 'links' else []) + ['Ссылка на страницу', 'Очищенная ссылка', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа', 'Статус скана'])
         ok &= ui0['images_checked'] and not ui0['excel_view_visible'] and not ui0['calib_visible']
         ged_legend = ['Запись сканов в GEDCOM'] if scenario == 'links' else []
         ok &= ui0['legends'] == ['Тип обработки данных', 'Откуда взять ссылки'] + ged_legend + ['Куда сохранить', 'Качество скана', 'Настройки']
@@ -215,10 +215,10 @@ with sync_playwright() as p:
         ok &= ui0['checks_reset'] == [False, False, False] and ui0['outNote'].endswith('«out»')
         ok &= sum(1 for n in scan_names if n.endswith('.jpg')) == 4 and not any(n.startswith('Archive_Scans/') for n in names)
         ok &= 'yaarchive-scans-default' in ui0['pick_log']
-        o = 1 if scenario == 'links' else 0
-        ok &= all(r[o + 1] and r[o + 1].startswith('/Volumes/DATA/Archive_Scans/') and r[o + 1].endswith('.jpg') and 'ЦГА Москвы' in r[o + 2] and r[o + 3] for r in rows[1:])
-        ok &= (scenario != 'links') or all(r[0] for r in rows[1:])
-        ok &= all(c.hyperlink.target.startswith('file:///Volumes/DATA/Archive_Scans/') for r in ws.iter_rows(min_row=2) for c in r[o + 1:o + 2] if c.hyperlink)
+        o = 2 if scenario == 'links' else 0
+        ok &= all(r[o + 2] and r[o + 2].startswith('/Volumes/DATA/Archive_Scans/') and r[o + 2].endswith('.jpg') and 'ЦГА Москвы' in r[o + 3] and r[o + 4] and r[o + 5] == 'сохранён' and r[o + 1].startswith('https://ya.ru/archive/catalog/') for r in rows[1:])
+        ok &= (scenario != 'links') or all(r[0] == '@I1@' and r[1] == 'Иван Ладыгин' for r in rows[1:])
+        ok &= 'result_links_all.csv' in names and 'result_links.xlsx' not in names
         ok &= 'list_links_fixed.html' in names and 'links_run_log.txt' in names
         ok &= 'center' not in (dl / 'list_links_fixed.html').read_text(encoding='utf-8')
         ok &= stats['pages'] == 4 and stats['grant'] == 4

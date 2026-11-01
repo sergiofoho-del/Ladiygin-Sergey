@@ -1042,9 +1042,10 @@
   }
   async function saveLinksResult(final) {
     if (!dlRunPlan || !outDir) return;
-    const bytes = await XlsxWriter.build(LinksTools.sheets(dlRunPlan, dlMeta));
-    await writeDl('result_links.xlsx', new Blob([bytes], { type: XLSX_MIME }));
-    if (final) log(`Excel сохранён: «${outDir.name}/» result_links.xlsx (страниц ${dlRunPlan.unique.length}).`);
+    const f = LinksTools.csvFiles(dlRunPlan, dlMeta);
+    await writeDl('result_links.csv', new Blob([f.main], { type: 'text/csv;charset=utf-8' }));
+    await writeDl('result_links_all.csv', new Blob([f.all], { type: 'text/csv;charset=utf-8' }));
+    if (final) log(`Таблица сохранена: «${outDir.name}/» result_links.csv (страниц ${dlRunPlan.unique.length}) и result_links_all.csv (все найденные ссылки). Кодировка UTF-8, разделитель «;».`);
   }
 
   // одна страница: скан уже есть -> пропуск без открытия страницы (имя файла известно по пути дела из первой страницы этого дела)
@@ -1116,7 +1117,7 @@
       const cur = await chrome.tabs.getCurrent();
       appTabId = cur ? cur.id : null;
       await writeDl('list_links_fixed.html', new Blob([LinksTools.fixedHtml(plan)], { type: 'text/html;charset=utf-8' }));
-      await saveLinksResult(false);                       // второй лист («Все ссылки») готов сразу
+      await saveLinksResult(false);                       // таблица всех найденных ссылок готова сразу
       await ensureLogin();
       const crumbs = new Map();
       let n = 0;

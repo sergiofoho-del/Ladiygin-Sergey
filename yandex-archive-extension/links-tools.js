@@ -152,7 +152,7 @@
     const seenUrl = new Set();
     for (const s of sources) {
       const url = s.url, p = parseArchiveUrl(url, opts);
-      const e = { url, where: s.where || '', person: s.person || '', status: '', clean: '', pages: p.pages.length };
+      const e = { url, where: s.where || '', person: s.person || '', xrefs: s.xrefs || [], status: '', clean: '', pages: p.pages.length };
       entries.push(e);
       if (p.status !== 'ok') { e.status = 'пропущена: ' + p.reason; continue; }
       let fresh = 0;
@@ -184,31 +184,37 @@
       `<p>Страниц без повторов: ${plan.unique.length}</p>\n` + rows.join('\n') + '\n</body></html>\n';
   }
 
-  // Строки листов Excel. meta[clean] = {cga, docType, scanFile, scanHref, scanName, err}
-  // Для GEDCOM добавляется первый столбец «Имя персоны» (к какой персоне относится ссылка).
-  const HEAD_MAIN = ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа'];
+  // Таблицы результата. meta[clean] = {cga, docType, scanFile, scanLocal, scanName, err}
+  // Для GEDCOM первыми идут «ID персоны (INDI)» (номер записи INDI, например @I12@ — по нему запись находит персону в файле; у семьи FAM — оба супруга
+  // через «; ») и «Имя персоны» (для чтения: имена могут повторяться, ID — нет).
+  const HEAD_MAIN = ['Ссылка на страницу', 'Очищенная ссылка', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа', 'Статус скана'];
   const HEAD_ALL = ['Ссылка на страницу', 'Ссылка для скачивания', 'Статус', 'Где найдена'];
+  const HEAD_ID = 'ID персоны (INDI)', HEAD_NAME = 'Имя персоны';
   function sheets(plan, meta) {
-    const g = !!plan.gedcom, o = g ? 1 : 0;
-    const main = [(g ? ['Имя персоны'] : []).concat(HEAD_MAIN)], mainLinks = [];
+    const g = !!plan.gedcom;
+    const lead = (id, name) => (g ? [id, name] : []);
+    const main = [lead(HEAD_ID, HEAD_NAME).concat(HEAD_MAIN)];
     plan.unique.forEach((u) => {
       const m = meta[u.clean] || {};
-      const r = main.length;
-      const row = [u.origs[0], m.scanFile ? m.scanLocal || m.scanName || m.scanFile : (m.err ? `не скачан: ${m.err}` : ''), m.cga || '', m.docType || ''];
-      main.push(g ? [(u.persons || []).join('; ')].concat(row) : row);
-      if (/^https?:/.test(u.origs[0])) mainLinks.push([r, o, u.origs[0]]);
-      if (m.scanFile) mainLinks.push([r, o + 1, m.scanHref || m.scanFile]);
+      const local = m.scanFile ? m.scanLocal || m.scanName || m.scanFile : '';
+      const status = m.scanFile ? 'сохранён' : (m.err ? `не скачан: ${m.err}` : '');
+      main.push(lead((u.xrefs || []).join('; '), (u.persons || []).join('; '))
+        .concat([u.origs[0], u.clean, local, m.cga || '', m.docType || '', status]));
     });
-    const all = [g ? ['Имя персоны'].concat(HEAD_ALL) : HEAD_ALL];
-    plan.entries.forEach((e) => all.push(g ? [e.person || ''].concat([e.url, e.clean, e.status, e.where]) : [e.url, e.clean, e.status, e.where]));
-    const w = (rows, cap) => rows[0].map((_, c) => Math.min(cap, Math.max(12, ...rows.slice(0, 200).map((r) => String(r[c] || '').length)) + 2));
-    return [
-      { name: 'Страницы', rows: main, widths: (g ? [28] : []).concat([70, 46, 42, 38]), links: mainLinks },
-      { name: 'Все ссылки', rows: all, widths: w(all, 70) },
-    ];
+    const all = [lead(HEAD_ID, HEAD_NAME).concat(HEAD_ALL)];
+    plan.entries.forEach((e) => all.push(lead((e.xrefs || []).join('; '), e.person || '').concat([e.url, e.clean, e.status, e.where])));
+    return [{ name: 'Страницы', rows: main }, { name: 'Все ссылки', rows: all }];
   }
 
-  const api = { decodeBytes, gedcomRecords, gedcomLinks, htmlLinks, parseArchiveUrl, cleanLink, buildPlan, fixedHtml, sheets, HEAD_MAIN, HEAD_ALL, MAX_RANGE };
+  // CSV: UTF-8 с BOM (Excel открывает кириллицу правильно, остальные программы BOM пропускают), разделитель «;», строки CRLF, поля в кавычках по RFC 4180
+  function csv(rows) {
+    const q = (v) => { const t = v === null || v === undefined ? '' : String(v); return /[;"\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    return '\ufeff' + rows.map((r) => r.map(q).join(';')).join('\r\n') + '\r\n';
+  }
+  // -> {main: текст result_links.csv, all: текст result_links_all.csv}
+  function csvFiles(plan, meta) { const sh = sheets(plan, meta); return { main: csv(sh[0].rows), all: csv(sh[1].rows) }; }
+
+  const api = { decodeBytes, gedcomRecords, gedcomLinks, htmlLinks, parseArchiveUrl, cleanLink, buildPlan, fixedHtml, sheets, csv, csvFiles, HEAD_MAIN, HEAD_ALL, MAX_RANGE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LinksTools = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
