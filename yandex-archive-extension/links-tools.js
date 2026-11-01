@@ -214,7 +214,7 @@
   // -> {main: текст result_links.csv, all: текст result_links_all.csv}
   function csvFiles(plan, meta) { const sh = sheets(plan, meta); return { main: csv(sh[0].rows), all: csv(sh[1].rows) }; }
 
-  const api = { decodeBytes, gedcomRecords, gedcomLinks, htmlLinks, parseArchiveUrl, cleanLink, buildPlan, fixedHtml, sheets, csv, csvFiles, HEAD_MAIN, HEAD_ALL, MAX_RANGE };
+  const api = { decodeBytes, gedcomRecords, gedcomLinks, htmlLinks, parseArchiveUrl, cleanLink, buildPlan, fixedHtml, urlsIn, sheets, csv, csvFiles, HEAD_MAIN, HEAD_ALL, MAX_RANGE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LinksTools = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

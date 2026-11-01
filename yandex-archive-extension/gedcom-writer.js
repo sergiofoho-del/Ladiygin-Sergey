@@ -56,46 +56,95 @@
 
   const fmtOf = (path) => { const m = String(path).match(/\.([A-Za-z0-9]{2,4})$/); return m ? m[1].toLowerCase() : 'jpg'; };
 
+  const LT = () => root.LinksTools || (typeof require !== 'undefined' ? require('./links-tools.js') : null);
+  const baseName = (p) => String(p).split(/[\\/]/).pop();
+
+  // Что у каждой персоны уже есть (записи самого файла, не наши): ссылки на страницы и файлы сканов
+  //   source — источник SOUR, который ссылается на страницу (ссылка ya.ru в записи/цитате) или имеет файл этого скана (OBJE/FILE);
+  //   media  — медиа-объект OBJE (у персоны, внутри или указателем), чей FILE — этот скан или ссылка на эту страницу.
+  function existingOf(recs) {
+    const L = LT();
+    const parsed = L.gedcomRecords(recs.map((r) => r.lines.join('\n')).join('\n'));
+    const byX = new Map(parsed.filter((r) => r.xref).map((r) => [r.xref, r]));
+    const keysOf = (v) => { const out = []; for (const url of L.urlsIn(v)) { const q = L.parseArchiveUrl(url, { expandRange: true }); if (q.status === 'ok') q.pages.forEach((n) => out.push(`${q.fileId}:${n}`)); } return out; };
+    const isPtr = (v) => /^@[^@]+@$/.test(String(v).trim());
+    const out = new Map();
+    for (const r of parsed) {
+      if (r.tag !== 'INDI') continue;
+      const e = { srcKeys: new Set(), srcFiles: new Set(), medKeys: new Set(), medFiles: new Set() };
+      const take = (lines, keys, files) => lines.forEach((ln) => { keysOf(ln.value).forEach((k) => keys.add(k)); if (ln.tag === 'FILE') files.add(baseName(ln.value.trim())); });
+      const kids = (i) => { const out2 = []; for (let j = i + 1; j < r.lines.length && r.lines[j].level > r.lines[i].level; j++) out2.push(r.lines[j]); return out2; };
+      r.lines.forEach((ln, i) => {
+        if (ln.tag === 'SOUR' && isPtr(ln.value) && byX.has(ln.value.trim())) {
+          take(kids(i), e.srcKeys, e.srcFiles);
+          take(byX.get(ln.value.trim()).lines, e.srcKeys, e.srcFiles);
+        } else if (ln.tag === 'OBJE') {
+          if (isPtr(ln.value) && byX.has(ln.value.trim())) take(byX.get(ln.value.trim()).lines, e.medKeys, e.medFiles);
+          else take(kids(i), e.medKeys, e.medFiles);
+        }
+      });
+      out.set(r.xref, e);
+    }
+    return out;
+  }
+
+  // Вариант записи у каждой персоны: выбранный пользователем; если у персоны уже есть такая запись этой страницы — другой вариант;
+  // если есть записи обоих видов — ничего не пишем. Существующие записи не меняются и не дублируются.
   function apply(text, plan, meta, variant, opts) {
     if (variant !== 'source' && variant !== 'media') throw new Error('Вариант записи: source или media');
     const o = opts || {};
+    const other = variant === 'source' ? 'media' : 'source';
     const eol = /\r\n/.test(text) ? '\r\n' : /\n/.test(text) ? '\n' : /\r/.test(text) ? '\r' : '\r\n';
     const base = stripOwn(splitRecords(text));
     const recs = base.recs;
     const indi = new Map(recs.filter((r) => r.tag === 'INDI' && r.xref).map((r) => [r.xref, r]));
-    const stats = { variant, pages: 0, links: 0, persons: new Set(), noScan: 0, noPerson: 0, removed: base.removed };
+    const have = existingOf(recs);
+    const stats = { variant, pages: 0, links: 0, persons: new Set(), noScan: 0, noPerson: 0, removed: base.removed, switched: 0, exists: 0, bySource: 0, byMedia: 0 };
     const added = [];
-    let n = 0;
+    const num = { source: 0, media: 0 };
     for (const u of plan.unique) {
       const m = (meta && meta[u.clean]) || {};
       const path = m.scanLocal || m.scanFile || '';
       if (!path || m.err) { stats.noScan++; continue; }
       const who = (u.xrefs || []).filter((x) => indi.has(x));
       if (!who.length) { stats.noPerson++; continue; }
-      const id = `@${PREFIX[variant]}${++n}@`;
+      const name = baseName(path);
+      const has = (x, v) => { const e = have.get(x); if (!e) return false; const k = v === 'source' ? e.srcKeys : e.medKeys, f = v === 'source' ? e.srcFiles : e.medFiles; return k.has(u.key) || f.has(name); };
+      const todo = { source: [], media: [] };
+      for (const x of who) {
+        if (!has(x, variant)) todo[variant].push(x);
+        else if (!has(x, other)) { todo[other].push(x); stats.switched++; }
+        else stats.exists++;
+      }
       const docType = m.docType || 'Страница документа Яндекс Архива';
       const where = `Скан ${u.page}, ${u.clean}`;
-      const rec = [`0 ${id} ${variant === 'source' ? 'SOUR' : 'OBJE'}`];
-      if (variant === 'source') {
-        emit(rec, 1, 'TITL', docType);
-        if (m.cga) emit(rec, 1, 'PUBL', `Архив хранения документа: ${m.cga}`);
-        emit(rec, 1, 'NOTE', `Страница в Яндекс Архиве: ${u.clean}`);
-        rec.push('1 OBJE');
-        emit(rec, 2, 'FILE', path); emit(rec, 2, 'FORM', fmtOf(path));
-        emit(rec, 2, 'TITL', m.scanName ? `${docType}, ${m.scanName}` : docType);
-      } else {
-        emit(rec, 1, 'FILE', path); emit(rec, 1, 'FORM', fmtOf(path));
-        emit(rec, 1, 'TITL', docType);
-        emit(rec, 1, 'NOTE', (m.cga ? `Архив хранения документа: ${m.cga}\n` : '') + `Страница в Яндекс Архиве: ${u.clean}`);
+      let wrote = false;
+      for (const v of [variant, other]) {
+        if (!todo[v].length) continue;
+        const id = `@${PREFIX[v]}${++num[v]}@`;
+        const rec = [`0 ${id} ${v === 'source' ? 'SOUR' : 'OBJE'}`];
+        if (v === 'source') {
+          emit(rec, 1, 'TITL', docType);
+          if (m.cga) emit(rec, 1, 'PUBL', `Архив хранения документа: ${m.cga}`);
+          emit(rec, 1, 'NOTE', `Страница в Яндекс Архиве: ${u.clean}`);
+          rec.push('1 OBJE');
+          emit(rec, 2, 'FILE', path); emit(rec, 2, 'FORM', fmtOf(path));
+          emit(rec, 2, 'TITL', m.scanName ? `${docType}, ${m.scanName}` : docType);
+        } else {
+          emit(rec, 1, 'FILE', path); emit(rec, 1, 'FORM', fmtOf(path));
+          emit(rec, 1, 'TITL', docType);
+          emit(rec, 1, 'NOTE', (m.cga ? `Архив хранения документа: ${m.cga}\n` : '') + `Страница в Яндекс Архиве: ${u.clean}`);
+        }
+        added.push({ lines: rec });
+        todo[v].forEach((x) => {
+          const r = indi.get(x);
+          if (v === 'source') { r.lines.push(`1 SOUR ${id}`); emit(r.lines, 2, 'PAGE', where); stats.bySource++; }
+          else { r.lines.push(`1 OBJE ${id}`); stats.byMedia++; }
+          stats.links++; stats.persons.add(x);
+        });
+        wrote = true;
       }
-      added.push({ lines: rec });
-      who.forEach((x) => {
-        const r = indi.get(x);
-        if (variant === 'source') { r.lines.push(`1 SOUR ${id}`); emit(r.lines, 2, 'PAGE', where); }
-        else r.lines.push(`1 OBJE ${id}`);
-        stats.links++; stats.persons.add(x);
-      });
-      stats.pages++;
+      if (wrote) stats.pages++;
     }
     // кодировка выходного файла — UTF-8: в шапке указываем это
     const head = recs.find((r) => r.tag === 'HEAD');
@@ -111,7 +160,7 @@
     return { text: all.map((r) => r.lines.join(eol)).join(eol) + eol, stats };
   }
 
-  const api = { apply, emit, splitRecords, stripOwn };
+  const api = { apply, emit, splitRecords, stripOwn, existingOf };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GedcomWriter = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
