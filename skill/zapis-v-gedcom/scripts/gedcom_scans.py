@@ -137,7 +137,7 @@ def plan_of(recs, expand_range=False):
                     key = (p[0], n)
                     u = index.get(key)
                     if u is None:
-                        u = index[key] = {"fileId": p[0], "page": n, "clean": f"https://ya.ru/archive/catalog/{p[0]}/{n}", "xrefs": []}
+                        u = index[key] = {"fileId": p[0], "page": n, "clean": f"https://ya.ru/archive/catalog/{p[0]}/{n}", "key": f"{p[0]}:{n}", "xrefs": []}
                         unique.append(u)
                     for x in xs:
                         if x not in u["xrefs"]: u["xrefs"].append(x)
@@ -207,38 +207,90 @@ def strip_own(recs):
     return kept, removed
 
 
+def existing_of(recs):
+    """что у каждой персоны уже есть (записи самого файла): страницы/файлы в источниках (srcKeys/srcFiles) и в медиа-объектах (medKeys/medFiles)"""
+    parsed = records("\n".join("\n".join(r["lines"]) for r in recs))
+    by = {r["xref"]: r for r in parsed if r["xref"]}
+    def keys_of(v):
+        out = set()
+        for url in urls_in(v):
+            q = parse_url(url, True)
+            if q: out.update(f"{q[0]}:{n}" for n in q[1])
+        return out
+    is_ptr = lambda v: re.fullmatch(r"@[^@]+@", str(v).strip()) is not None
+    out = {}
+    for r in parsed:
+        if r["tag"] != "INDI": continue
+        e = {"srcKeys": set(), "srcFiles": set(), "medKeys": set(), "medFiles": set()}
+        def take(lines, keys, files):
+            for ln in lines:
+                keys.update(keys_of(ln["value"]))
+                if ln["tag"] == "FILE": files.add(re.split(r"[\\/]", ln["value"].strip())[-1])
+        ls = r["lines"]
+        def kids(i):
+            res = []
+            for j in range(i + 1, len(ls)):
+                if ls[j]["level"] <= ls[i]["level"]: break
+                res.append(ls[j])
+            return res
+        for i, ln in enumerate(ls):
+            v = ln["value"].strip()
+            if ln["tag"] == "SOUR" and is_ptr(v) and v in by:
+                take(kids(i), e["srcKeys"], e["srcFiles"]); take(by[v]["lines"], e["srcKeys"], e["srcFiles"])
+            elif ln["tag"] == "OBJE":
+                if is_ptr(v) and v in by: take(by[v]["lines"], e["medKeys"], e["medFiles"])
+                else: take(kids(i), e["medKeys"], e["medFiles"])
+        out[r["xref"]] = e
+    return out
+
+
 def apply(text, unique, meta, variant):
     eol = "\r\n" if "\r\n" in text else "\n" if "\n" in text else "\r" if "\r" in text else "\r\n"
     recs, removed = strip_own(split_records(text))
     indi = {r["xref"]: r for r in recs if r["tag"] == "INDI" and r["xref"]}
-    st = {"pages": 0, "links": 0, "persons": set(), "noScan": 0, "noPerson": 0, "removed": removed}
-    added, n = [], 0
-    prefix = "YA_S" if variant == "source" else "YA_M"
+    have = existing_of(recs)
+    other = "media" if variant == "source" else "source"
+    st = {"pages": 0, "links": 0, "persons": set(), "noScan": 0, "noPerson": 0, "removed": removed, "switched": 0, "exists": 0, "bySource": 0, "byMedia": 0}
+    added, num = [], {"source": 0, "media": 0}
+    prefix = {"source": "YA_S", "media": "YA_M"}
     for u, m in zip(unique, meta):
         path = m["local"]
         if not path: st["noScan"] += 1; continue
         who = [x for x in u["xrefs"] if x in indi]
         if not who: st["noPerson"] += 1; continue
-        n += 1; rid = f"@{prefix}{n}@"
-        doc = m["type"] or "Страница документа Яндекс Архива"
-        rec = [f"0 {rid} {'SOUR' if variant == 'source' else 'OBJE'}"]
-        fmt = (re.search(r"\.([A-Za-z0-9]{2,4})$", path) or [0, "jpg"])[1].lower()
         name = re.split(r"[\\/]", path)[-1]
-        if variant == "source":
-            emit(rec, 1, "TITL", doc)
-            if m["cga"]: emit(rec, 1, "PUBL", f"Архив хранения документа: {m['cga']}")
-            emit(rec, 1, "NOTE", f"Страница в Яндекс Архиве: {u['clean']}")
-            rec.append("1 OBJE"); emit(rec, 2, "FILE", path); emit(rec, 2, "FORM", fmt); emit(rec, 2, "TITL", f"{doc}, {name}")
-        else:
-            emit(rec, 1, "FILE", path); emit(rec, 1, "FORM", fmt); emit(rec, 1, "TITL", doc)
-            emit(rec, 1, "NOTE", (f"Архив хранения документа: {m['cga']}\n" if m["cga"] else "") + f"Страница в Яндекс Архиве: {u['clean']}")
-        added.append({"lines": rec})
+        def has(x, v):
+            e = have.get(x)
+            if not e: return False
+            return u["key"] in e["srcKeys" if v == "source" else "medKeys"] or name in e["srcFiles" if v == "source" else "medFiles"]
+        todo = {"source": [], "media": []}
         for x in who:
-            r = indi[x]
-            if variant == "source": r["lines"].append(f"1 SOUR {rid}"); emit(r["lines"], 2, "PAGE", f"Скан {u['page']}, {u['clean']}")
-            else: r["lines"].append(f"1 OBJE {rid}")
-            st["links"] += 1; st["persons"].add(x)
-        st["pages"] += 1
+            if not has(x, variant): todo[variant].append(x)
+            elif not has(x, other): todo[other].append(x); st["switched"] += 1
+            else: st["exists"] += 1
+        doc = m["type"] or "Страница документа Яндекс Архива"
+        fmt = (re.search(r"\.([A-Za-z0-9]{2,4})$", path) or [0, "jpg"])[1].lower()
+        wrote = False
+        for v in (variant, other):
+            if not todo[v]: continue
+            num[v] += 1; rid = f"@{prefix[v]}{num[v]}@"
+            rec = [f"0 {rid} {'SOUR' if v == 'source' else 'OBJE'}"]
+            if v == "source":
+                emit(rec, 1, "TITL", doc)
+                if m["cga"]: emit(rec, 1, "PUBL", f"Архив хранения документа: {m['cga']}")
+                emit(rec, 1, "NOTE", f"Страница в Яндекс Архиве: {u['clean']}")
+                rec.append("1 OBJE"); emit(rec, 2, "FILE", path); emit(rec, 2, "FORM", fmt); emit(rec, 2, "TITL", f"{doc}, {name}")
+            else:
+                emit(rec, 1, "FILE", path); emit(rec, 1, "FORM", fmt); emit(rec, 1, "TITL", doc)
+                emit(rec, 1, "NOTE", (f"Архив хранения документа: {m['cga']}\n" if m["cga"] else "") + f"Страница в Яндекс Архиве: {u['clean']}")
+            added.append({"lines": rec})
+            for x in todo[v]:
+                r = indi[x]
+                if v == "source": r["lines"].append(f"1 SOUR {rid}"); emit(r["lines"], 2, "PAGE", f"Скан {u['page']}, {u['clean']}"); st["bySource"] += 1
+                else: r["lines"].append(f"1 OBJE {rid}"); st["byMedia"] += 1
+                st["links"] += 1; st["persons"].add(x)
+            wrote = True
+        if wrote: st["pages"] += 1
     head = next((r for r in recs if r["tag"] == "HEAD"), None)
     if head:
         i = next((k for k, l in enumerate(head["lines"]) if re.match(r"^\s*1\s+CHAR\b", l, re.I)), -1)
@@ -278,7 +330,8 @@ def main():
         dest = Path(a.out) if a.out else src.with_name(src.stem + "_со_сканами.ged")
     dest.write_bytes(out.encode("utf-8"))
     print(f"Записано: {dest}\nСтраниц {st['pages']}, ссылок у персон {st['links']}, персон {st['persons']}; "
-          f"без скана {st['noScan']}, без персоны {st['noPerson']}; прежних записей заменено {st['removed']}.")
+          f"без скана {st['noScan']}, без персоны {st['noPerson']}; уже были записи этой страницы: другим вариантом {st['switched']}, пропущено {st['exists']}; "
+          f"прежних записей навыка заменено {st['removed']}.")
 
 
 if __name__ == "__main__":

@@ -1100,7 +1100,7 @@
         log(`GEDCOM: записано в «${dir.name}/${name}_со_сканами.ged».`);
       }
       log(`GEDCOM (${gedRun.variant === 'media' ? 'общий медиа-объект' : 'источник'}): страниц ${st.pages}, ссылок у персон ${st.links}, персон ${st.persons}; ` +
-        `без скана ${st.noScan}, без персоны ${st.noPerson}${st.removed ? `; прежних записей навыка заменено ${st.removed}` : ''}. Кодировка файла — UTF-8.`);
+        `без скана ${st.noScan}, без персоны ${st.noPerson}; записей этой страницы уже было у персоны: другим вариантом записано ${st.switched}, пропущено ${st.exists}${st.removed ? `; прежних записей навыка заменено ${st.removed}` : ''}. Кодировка файла — UTF-8.`);
     } catch (e) { log('GEDCOM: не удалось записать — ' + (e && e.message)); }
   }
 
