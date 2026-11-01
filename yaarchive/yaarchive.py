@@ -49,7 +49,7 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
