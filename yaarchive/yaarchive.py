@@ -46,10 +46,10 @@ import threading
 import time
 import traceback
 from collections import Counter, OrderedDict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
-VERSION = "3.2.2"
+VERSION = "3.3.0"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -96,10 +96,15 @@ SPR = {}          # справочники
 class Log:
     fh = None
 
+    sink = None            # расширение Chrome: функция, получающая строки журнала
+
     @classmethod
     def __call__(cls, msg):
         line = f"[{datetime.datetime.now():%H:%M:%S}] {msg}"
-        print(line, flush=True)
+        if cls.sink:
+            cls.sink(line)
+        else:
+            print(line, flush=True)
         if cls.fh:
             cls.fh.write(f"{datetime.date.today()} {line}\n")
             cls.fh.flush()
@@ -422,7 +427,9 @@ def crumb_info(crumbs, page, node_id, origin="https://ya.ru"):
             "file_title": (file or {}).get("name") or ""}
 
 
-def scan_index(roots, extra):
+def scan_index(roots, extra, names=None):
+    if names is not None:            # расширение Chrome: имена файлов сканов уже перечислены, значение — путь для ссылки в Excel
+        return {k: PurePosixPath(v) for k, v in names.items()}
     dirs = [Path(d) for d in extra or []] + [Path(DEFAULT_SCANS)]     # как в расширении 2.7.0+: /Volumes/DATA/Archive_Scans
     for root in roots:
         base = Path(root)
@@ -785,7 +792,7 @@ def build(roots, out_dir, opts):
     pages, dups = merge_pages(loaded)
     docs = group_documents(pages)
     corr = FX.Corrections(out_dir)
-    sidx = scan_index(roots, opts.scans)
+    sidx = scan_index(roots, opts.scans, getattr(opts, "scan_names", None))
     people = []
     for d in docs:
         rows = process_confession(d) if d["kind"] == KIND_CONF else process_revision(d)
@@ -823,6 +830,8 @@ def build(roots, out_dir, opts):
 
 # =============================================================================== 15. итог
 def rel_link(target, base_dir):
+    if isinstance(target, PurePosixPath) and target.is_absolute():      # путь скана, как его видит пользователь: file:///Volumes/…
+        return target.as_uri()
     try:
         return os.path.relpath(target, base_dir).replace("\\", "/")
     except ValueError:                  # другой диск в Windows
@@ -950,6 +959,63 @@ def watch(roots, out_dir, opts):
     finally:
         lock.release()
     return 0
+
+
+# =============================================================================== расширение Chrome (встроенный движок)
+_CTX = None
+
+
+def engine_run(root, scan_names_json="null", scans_public=DEFAULT_SCANS, sink=None):
+    """Итоговая обработка внутри расширения Chrome (Pyodide): root — папка результата с «yaarchive_debug/», итог — «Итог/» в ней.
+    scan_names_json — {имя файла скана: путь для ссылки}; sink — приёмник строк журнала. -> JSON: счётчики, файлы, предложения исправлений"""
+    global _CTX
+    Log.sink, Log.fh = sink, None
+    roots = [Path(root)]
+    out_dir = roots[0] / OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    names = json.loads(scan_names_json)
+    log(f"yaarchive {VERSION} (встроен в расширение). Справочники: {load_spravochniki(roots)}")
+    opts = SimpleNamespace(settle=0, scans=[], watching=False, dialog_timeout=0, force=True, no_dialog=True, interval=0, scan_names=names)
+    t0 = time.time()
+    fb = check_excel_decisions(out_dir)
+    if fb:
+        log(f"Из Excel: {fb}.")
+    ctx = build(roots, out_dir, opts)
+    if not ctx.pages:
+        _CTX = None
+        log("Пакетов с данными страниц нет: сначала выполните обработку (исповедные ведомости или ревизские сказки) в этой папке результата.")
+        return json.dumps({"pages": 0, "people": 0, "docs": 0, "proposals": [], "files": []}, ensure_ascii=False)
+    res = write_outputs(ctx)
+    _CTX = ctx
+    log(f"Итог: документов {len(ctx.docs)}, страниц {len(ctx.pages)}, людей {len(ctx.people)}, семей в GEDCOM {res.get('fams', 0)}, "
+        f"предложений исправлений {len(ctx.proposals)} — «{OUT_DIR}/» ({time.time() - t0:.0f} с)")
+    if res.get("locked"):
+        log(f"  {XLSX} открыт в Excel — записан «{res['xlsx'].name}». Закройте Excel, чтобы обновлять основной файл.")
+    props = [{k: pr.get(k) for k in ("id", "type", "where", "now", "new", "reason", "url", "changes")} for pr in ctx.proposals]
+    return json.dumps({"pages": len(ctx.pages), "people": len(ctx.people), "docs": len(ctx.docs), "fams": res.get("fams", 0),
+                       "proposals": props, "files": [Path(res["xlsx"]).name, GED, JSONF, REPORT], "packages": len(ctx.packages)},
+                      ensure_ascii=False, default=str)
+
+
+def engine_decide(decisions_json):
+    """решения по предложениям навыка «Исправление ошибок»: [{id, decision: 'да'|'нет'}] -> применены; затем нужен новый engine_run"""
+    ctx = _CTX
+    if ctx is None:
+        return json.dumps({"applied": 0})
+    by_id = {pr["id"]: pr for pr in ctx.proposals}
+    applied = 0
+    man = FX.load_manual(ctx.out_dir)
+    for d in json.loads(decisions_json):
+        pr = by_id.get(d["id"])
+        if not pr:
+            continue
+        ctx.corr.decide(pr, "да" if d["decision"] == "да" else "нет", "окно", roots=ctx.roots)
+        applied += d["decision"] == "да"
+        if pr["id"] in man:
+            del man[pr["id"]]
+    (Path(ctx.out_dir) / FX.MANUAL).write_text(json.dumps(man, ensure_ascii=False), encoding="utf-8")
+    log(f"Решений получено: {len(json.loads(decisions_json))}, применено исправлений: {applied}.")
+    return json.dumps({"applied": applied})
 
 
 def main(argv=None):
