@@ -175,7 +175,7 @@ with sync_playwright() as p:
                'legends': app.eval_on_selector_all('fieldset:not([hidden]) > legend', 'els => els.map(e => e.textContent)'),
                'info': app.inner_text('#linksInfo')}
         qid = '#qOrig' if scenario == 'links' else '#qLow'
-        app.check('#expandRanges')   # в сценарии нужен диапазон 866–867 / 865–867
+        ui0['no_expand_checkbox'] = app.locator('#expandRanges').count()   # переключателя диапазонов нет: берётся только указанная страница
         app.click('#startBtn'); app.wait_for_timeout(500)
         ui0['no_quality_status'] = app.inner_text('#status')       # качество не выбрано — запуск не начинается
         if scenario == 'links':      # навык «Запись в GEDCOM»: раздел виден только для .ged; вариант «Источник», в копию
@@ -208,12 +208,12 @@ with sync_playwright() as p:
         if scenario == 'links':
             g = (dl / 'проект_со_сканами.ged').read_text(encoding='utf-8')
             print(g)
-            ok &= ui0['ged_visible'] and 'проект_со_сканами.ged' in names and g.count(' SOUR\n') == 4 and '1 SOUR @YA_S1@' in g
-            ok &= all('2 FILE /Volumes/DATA/Archive_Scans/' in g for _ in [0]) and g.count('0 @YA_S') == 4 and 'GEDCOM: записано' in (dl / 'links_run_log.txt').read_text(encoding='utf-8')
-        ok &= len(rows) == 1 + 4                      # 865, 866, 867 (дело A) и 165 (дело B); без дублей, без «дела целиком»
+            ok &= ui0['ged_visible'] and 'проект_со_сканами.ged' in names and g.count(' SOUR\n') == 3 and '1 SOUR @YA_S1@' in g
+            ok &= all('2 FILE /Volumes/DATA/Archive_Scans/' in g for _ in [0]) and g.count('0 @YA_S') == 3 and 'GEDCOM: записано' in (dl / 'links_run_log.txt').read_text(encoding='utf-8')
+        ok &= len(rows) == 1 + 3 and ui0['no_expand_checkbox'] == 0   # 865, 866 (дело A) и 165 (дело B): диапазоны не раскрываются; без дублей, без «дела целиком»
         ok &= ui0['no_quality_status'].startswith('Отметьте качество') and (('Оригинальное' if scenario == 'links' else 'Низкое') in ui0['qNote'])
         ok &= ui0['checks_reset'] == [False, False, False] and ui0['outNote'].endswith('«out»')
-        ok &= sum(1 for n in scan_names if n.endswith('.jpg')) == 4 and not any(n.startswith('Archive_Scans/') for n in names)
+        ok &= sum(1 for n in scan_names if n.endswith('.jpg')) == 3 and not any(n.startswith('Archive_Scans/') for n in names)
         ok &= 'yaarchive-scans-default' in ui0['pick_log']
         o = 2 if scenario == 'links' else 0
         ok &= all(r[o + 2] and r[o + 2].startswith('/Volumes/DATA/Archive_Scans/') and r[o + 2].endswith('.jpg') and 'ЦГА Москвы' in r[o + 3] and r[o + 4] and r[o + 5] == 'сохранён' and r[o + 1].startswith('https://ya.ru/archive/catalog/') for r in rows[1:])
@@ -221,7 +221,7 @@ with sync_playwright() as p:
         ok &= 'result_links_all.csv' in names and 'result_links.xlsx' not in names
         ok &= 'list_links_fixed.html' in names and 'links_run_log.txt' in names
         ok &= 'center' not in (dl / 'list_links_fixed.html').read_text(encoding='utf-8')
-        ok &= stats['pages'] == 4 and stats['grant'] == 4
+        ok &= stats['pages'] == 3 and stats['grant'] == 3
         print('E2E', scenario, 'OK' if ok else 'ОШИБКА'); sys.exit(0 if ok else 1)
     proc_mode = 'revision' if scenario.startswith('rev') else 'confession'
     app.check(f'input[name="mode"][value="{proc_mode}"]')
