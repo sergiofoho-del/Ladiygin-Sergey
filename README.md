@@ -18,6 +18,10 @@
 2. В Chrome откройте `chrome://extensions`, включите «Режим разработчика».
 3. «Загрузить распакованное расширение» → выберите папку `yandex-archive-extension`.
 
+## yaarchive 3.2.2
+
+Комплект пересобран с расширением 2.9.3 (`releases/3.2.2/yaarchive-3.2.2-macOS.zip`, `yaarchive.pyz`, навыки `.skill`).
+
 ## yaarchive 3.2.1
 
 Комплект пересобран с расширением 2.9.2 (`releases/3.2.1/yaarchive-3.2.1-macOS.zip`, `yaarchive.pyz`, навыки `.skill`).
