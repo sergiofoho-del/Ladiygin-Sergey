@@ -2,12 +2,12 @@
 """
 Запись в GEDCOM: вносит в .ged ссылки на сохранённые сканы страниц Яндекс Архива.
 
-Берёт .ged (ссылки ya.ru/yandex.ru архива в его записях) и result_links.xlsx, который расширение
+Берёт .ged (ссылки ya.ru/yandex.ru архива в его записях) и result_links.csv (UTF-8, «;»; подходит и прежний result_links.xlsx), который расширение
 «Яндекс Архив — сбор людей округи» (тип «Скачать графические образы страниц из списка ссылок») сделало по этому же .ged.
-Строки листа «Страницы» идут в порядке первых ссылок .ged без повторов — по этому порядку скрипт сопоставляет их со ссылками.
+Страницы сопоставляются по столбцу «Очищенная ссылка» (в прежних таблицах — по порядку строк).
 
 Запуск:
-  python gedcom_scans.py проект.ged result_links.xlsx --variant source|media [--out проект_со_сканами.ged] [--in-place]
+  python gedcom_scans.py проект.ged result_links.csv --variant source|media [--out проект_со_сканами.ged] [--in-place]
 Варианты:
   source — «Источник»: 0 @YA_S1@ SOUR (TITL документ и год, PUBL архив хранения, NOTE страница, OBJE с FILE/FORM/TITL)
            и у персоны «1 SOUR @YA_S1@ / 2 PAGE Скан N, ссылка».
@@ -29,8 +29,8 @@ URL_RX = re.compile(r"https?://(?:[\w-]+\.)*(?:ya\.ru|yandex\.ru)(?![\w.-])[^\s\
 ID_RX = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
 OWN_RX = re.compile(r"^@YA_[SM]\d+@$")
 MAX_RANGE = 500
-HEAD_URL, HEAD_LOCAL, HEAD_CGA, HEAD_TYPE, HEAD_PERSON = (
-    "Ссылка на страницу", "Локальная Ссылка на страницу", "Архив хранения документа", "Тип документа", "Имя персоны")
+HEAD_URL, HEAD_LOCAL, HEAD_CGA, HEAD_TYPE, HEAD_CLEAN = (
+    "Ссылка на страницу", "Локальная Ссылка на страницу", "Архив хранения документа", "Тип документа", "Очищенная ссылка")
 
 
 def decode(b):
@@ -144,20 +144,28 @@ def plan_of(recs, expand_range=False):
     return unique
 
 
-def read_meta(xlsx):
-    ws = load_workbook(xlsx)["Страницы"]
-    rows = [[c.value for c in r] for r in ws.iter_rows()]
+def read_meta(path):
+    """result_links.csv (UTF-8, «;») или result_links.xlsx -> (список строк, столбцы). Строка: local, cga, type, clean, status"""
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        import csv
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.reader(f, delimiter=";"))
+    else:
+        ws = load_workbook(path)["Страницы"]
+        rows = [[("" if c.value is None else str(c.value)) for c in r] for r in ws.iter_rows()]
     head = rows[0]
     col = {h: i for i, h in enumerate(head)}
-    for h in (HEAD_LOCAL, HEAD_CGA):
-        if h not in col and h != HEAD_CGA: sys.exit(f"В листе «Страницы» нет столбца «{h}».")
+    if HEAD_LOCAL not in col: sys.exit(f"В таблице нет столбца «{HEAD_LOCAL}».")
     cga_col = col.get(HEAD_CGA, col.get("Ссылка на ЦГА Москвы"))      # прежнее название столбца
+    get = lambda r, name: r[col[name]] if name in col and col[name] < len(r) else ""
     out = []
     for r in rows[1:]:
-        local = r[col[HEAD_LOCAL]] or ""
+        if not any(r): continue
+        local = get(r, HEAD_LOCAL)
         out.append({"local": "" if str(local).startswith("не скачан") else str(local),
-                    "cga": (r[cga_col] or "") if cga_col is not None else "",
-                    "type": (r[col[HEAD_TYPE]] or "") if HEAD_TYPE in col else ""})
+                    "cga": (r[cga_col] if cga_col is not None and cga_col < len(r) else ""),
+                    "type": get(r, HEAD_TYPE), "clean": get(r, HEAD_CLEAN)})
     return out
 
 
@@ -246,7 +254,7 @@ def apply(text, unique, meta, variant):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ged"); ap.add_argument("xlsx")
+    ap.add_argument("ged"); ap.add_argument("table", help="result_links.csv (или .xlsx)")
     ap.add_argument("--variant", choices=("source", "media"), required=True)
     ap.add_argument("--out"); ap.add_argument("--in-place", action="store_true")
     ap.add_argument("--ranges", action="store_true", help="разворачивать диапазоны sheet_page_from…to (как отметка в расширении)")
@@ -254,9 +262,14 @@ def main():
     src = Path(a.ged)
     raw = src.read_bytes()
     text = decode(raw)
-    unique, meta = plan_of(records(text), a.ranges), read_meta(a.xlsx)
-    if len(unique) != len(meta):
-        sys.exit(f"В .ged {len(unique)} уникальных страниц, а в листе «Страницы» {len(meta)} строк: Excel сделан не по этому .ged.")
+    unique, table = plan_of(records(text), a.ranges), read_meta(a.table)
+    if all(r["clean"] for r in table):             # таблица 2.9.2+: страницы сопоставляются по «Очищенная ссылка»
+        by = {r["clean"]: r for r in table}
+        meta = [by.get(u["clean"], {"local": "", "cga": "", "type": ""}) for u in unique]
+    elif len(unique) == len(table):                # прежняя таблица: по порядку строк
+        meta = table
+    else:
+        sys.exit(f"В .ged {len(unique)} уникальных страниц, а в таблице {len(table)} строк: таблица сделана не по этому .ged (или по-другому разобраны диапазоны — см. --ranges).")
     out, st = apply(text, unique, meta, a.variant)
     if a.in_place:
         backup = src.with_name(src.stem + "_до_сканов.ged"); backup.write_bytes(raw)

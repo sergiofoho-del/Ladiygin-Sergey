@@ -61,12 +61,16 @@ assert.strictEqual(L.decodeBytes(Buffer.from([0xc8, 0xe2, 0xe0, 0xed])), 'Ива
 const meta = { [plan.unique[0].clean]: { cga: 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', docType: 'Ревизская сказка от 1850 года', scanName: 'a.jpg', scanFile: 'Archive_Scans/a.jpg', scanLocal: '/Volumes/DATA/Archive_Scans/a.jpg', scanHref: 'file:///Volumes/DATA/Archive_Scans/a.jpg' },
   [plan.unique[1].clean]: { err: 'нет данных' } };
 const sh = L.sheets(plan, meta);
-assert.deepStrictEqual(sh[0].rows[0], ['Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа']);
-assert.deepStrictEqual(sh[0].rows[1].slice(1), ['/Volumes/DATA/Archive_Scans/a.jpg', 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', 'Ревизская сказка от 1850 года']);
-assert.strictEqual(sh[0].rows[2][1], 'не скачан: нет данных');
+const H = ['Ссылка на страницу', 'Очищенная ссылка', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа', 'Статус скана'];
+assert.deepStrictEqual(sh[0].rows[0], H);
+assert.deepStrictEqual(sh[0].rows[1].slice(1), [plan.unique[0].clean, '/Volumes/DATA/Archive_Scans/a.jpg', 'ЦГА Москвы/Фонд 51/Опись 8/Дело 588/Скан 165', 'Ревизская сказка от 1850 года', 'сохранён']);
+assert.deepStrictEqual([sh[0].rows[2][2], sh[0].rows[2][5]], ['', 'не скачан: нет данных']);
 assert.strictEqual(sh[0].rows.length, 5);
-assert.deepStrictEqual(sh[0].links.map((l) => [l[0], l[1]]), [[1, 0], [1, 1], [2, 0], [3, 0], [4, 0]]);
 assert.strictEqual(sh[1].rows.length, 1 + 6);
+// CSV: UTF-8 с BOM, «;», кавычки, CRLF
+const cs = L.csv([['a;b', 'в "кавычках"', 'Иван'], ['x', '', 'y\nz']]);
+assert.strictEqual(cs, '﻿"a;b";"в ""кавычках""";Иван\r\nx;;"y\nz"\r\n');
+assert.ok(L.csvFiles(plan, meta).main.startsWith('﻿Ссылка на страницу;Очищенная ссылка;'));
 // 8. GEDCOM: «Имя персоны» (INDI — имя; FAM — супруги; SOUR — кто ссылается)
 const gedP = ['0 HEAD', '0 @I1@ INDI', '1 NAME Иван /Ладыгин/', '1 SOUR @S1@', '0 @I2@ INDI', '1 NAME Анна /Ладыгина/',
   '1 NOTE https://ya.ru/archive/catalog/bfed2966-e671-4c18-bbb0-a9551ad28f8e/165', '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@',
@@ -77,10 +81,11 @@ assert.deepStrictEqual(glP.map((x) => x.person), ['Анна Ладыгина', '
 const gpP = L.buildPlan(glP);
 assert.ok(gpP.gedcom);
 const gsP = L.sheets(gpP, {});
-assert.deepStrictEqual(gsP[0].rows[0], ['Имя персоны', 'Ссылка на страницу', 'Локальная Ссылка на страницу', 'Архив хранения документа', 'Тип документа']);
-assert.strictEqual(gsP[0].rows[1][0], 'Анна Ладыгина');
-assert.strictEqual(gsP[0].links.filter((l) => l[1] === 1).length, 3);
-assert.strictEqual(gsP[1].rows[0][0], 'Имя персоны');
+assert.deepStrictEqual(gsP[0].rows[0], ['ID персоны (INDI)', 'Имя персоны'].concat(H));
+assert.deepStrictEqual(gsP[0].rows[1].slice(0, 2), ['@I2@', 'Анна Ладыгина']);
+assert.deepStrictEqual(gsP[0].rows[2].slice(0, 2), ['@I1@; @I2@', 'Иван Ладыгин и Анна Ладыгина']);   // ссылка в семье FAM — оба супруга
+assert.deepStrictEqual(gsP[1].rows[0].slice(0, 2), ['ID персоны (INDI)', 'Имя персоны']);
+assert.deepStrictEqual(gsP[1].rows[1].slice(0, 2), ['@I2@', 'Анна Ладыгина']);
 assert.strictEqual(L.sheets(L.buildPlan(L.htmlLinks('<a href="https://ya.ru/archive/catalog/3aa266f8-a0ed-434d-bd5d-c095d45efc1b/865">x</a>')), {})[0].rows[0][0], 'Ссылка на страницу');
 // 9. по умолчанию диапазон из ссылки поиска не разворачивается: берётся страница, на которую указывает ссылка
 const rg = L.parseArchiveUrl(`https://ya.ru/archive/search?query=x&fileId=${B}&sheet_page_from=163&sheet_page_to=165`);
